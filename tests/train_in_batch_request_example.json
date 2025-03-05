@@ -1,0 +1,43 @@
+{
+    "cases": [
+        {
+            "case": {
+                "cas": "HC2024001",
+                "edat": "67",
+                "genere": "H",
+                "c_alta": "1",
+                "periode": "2024",
+                "servei": "MIR",
+                "motiuingres": "Dispnea progressiva de diversos dies d'evolució amb empitjorament en les últimes 24 hores. Tos amb expectoració verdosa.",
+                "malaltiaactual": "Pacient amb antecedents de MPOC que consulta per quadre de dispnea progressiva de diversos dies d'evolució amb empitjorament en les últimes 24 hores. Refereix augment de tos amb expectoració verdosa. No refereix febre. No dolor toràcic. No altra simptomatologia acompanyant.",
+                "exploracio": "TA: 135/85 mmHg, FC: 92 bpm, FR: 24 rpm, Sat O2: 91% (aire ambient), Tª: 37.2ºC. Regular estat general. Normocolorejat i normohidratat. Eupneic en repòs. AC: Rítmic, no bufs. AP: Sibilants dispersos bilaterals amb roncus. No edemes EEII.",
+                "provescomplementariesing": "Analítica: Leucòcits 12.500 (N 75%), PCR 4.5, resta normal. GSA (FiO2 0.21): pH 7.38, pO2 58, pCO2 45, HCO3 26. Rx tòrax: No condensacions. Signes de hiperinsuflació.",
+                "provescomplementaries": "Cultiu esput: Pendent. GSA control (O2 ulleres nasals 2lpm): pH 7.40, pO2 68, pCO2 42, HCO3 25.",
+                "evolucio": "Evolució favorable amb tractament broncodilatador i corticoteràpia. Millora progressiva de la dispnea i de l'auscultació respiratòria. Es realitza educació sobre tècnica inhalatòria.",
+                "antecedents": "MPOC GOLD II. Hipertensió arterial. Dislipèmia. Exfumador des de fa 5 anys (IPA 45). No al·lèrgies medicamentoses conegudes.",
+                "cursclinic": "Dia 1: Ingrés per agudització de MPOC. Inici de tractament. Dia 2: Millora subjectiva. Dia 3: Evolució favorable, es planteja alta.",
+                "dx_revisat": "J441|J189|R060|I10|E785"
+            }
+        },
+        {
+            "case": {
+                "cas": "HC2024002",
+                "edat": "75",
+                "genere": "D",
+                "c_alta": "1",
+                "periode": "2024",
+                "servei": "MIR",
+                "motiuingres": "Dolor abdominal i vòmits de 48 hores d'evolució.",
+                "malaltiaactual": "Pacient que consulta per dolor abdominal epigàstric intens amb irradiació a hipocondri dret de 48 hores d'evolució. Associa nàusees i vòmits alimentaris. No febre. No alteració del ritme deposicional. No altra simptomatologia.",
+                "exploracio": "TA: 145/85 mmHg, FC: 88 bpm, Tª: 36.8ºC. Acceptable estat general. Normocolorejada. Abdomen: Dolor a la palpació en epigastri i hipocondri dret, Murphy +. No signes de peritonisme. No masses ni megalies.",
+                "provescomplementariesing": "Analítica: Leucòcits 13.200 (N 82%), PCR 8.5, Bilirubina 2.1, GPT 85, GOT 75, GGT 90, FA 120. Eco abdominal: Colelitiasi múltiple amb signes de colecistitis aguda. Paret vesicular engrossida.",
+                "provescomplementaries": "Analítica control: Leucòcits 9.800 (N 75%), PCR 4.2, Bilirubina 1.5, GPT 65, GOT 55.",
+                "evolucio": "Evolució favorable amb tractament antibiòtic i analgèsic. Millora progressiva del dolor abdominal i normalització dels paràmetres analítics.",
+                "antecedents": "Hipertensió arterial. Diabetis mellitus tipus 2. Dislipèmia. No intervencions quirúrgiques prèvies. No al·lèrgies medicamentoses.",
+                "cursclinic": "Dia 1: Ingrés per colecistitis aguda. Inici d'antibioteràpia. Dia 2: Millora clínica. Dia 3: Evolució favorable.",
+                "dx_revisat": "K800|K810|R100|I10|E119"
+            }
+        }
+    ],
+    "epochs": 3
+} 

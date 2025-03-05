@@ -1,0 +1,18 @@
+{
+    "case": {
+        "cas": "HC2024001",
+        "edat": "67",
+        "genere": "H",
+        "c_alta": "1",
+        "periode": "2024",
+        "servei": "MIR",
+        "motiuingres": "Dispnea progressiva de diversos dies d'evolució amb empitjorament en les últimes 24 hores. Tos amb expectoració verdosa.",
+        "malaltiaactual": "Pacient amb antecedents de MPOC que consulta per quadre de dispnea progressiva de diversos dies d'evolució amb empitjorament en les últimes 24 hores. Refereix augment de tos amb expectoració verdosa. No refereix febre. No dolor toràcic. No altra simptomatologia acompanyant.",
+        "exploracio": "TA: 135/85 mmHg, FC: 92 bpm, FR: 24 rpm, Sat O2: 91% (aire ambient), Tª: 37.2ºC. Regular estat general. Normocolorejat i normohidratat. Eupneic en repòs. AC: Rítmic, no bufs. AP: Sibilants dispersos bilaterals amb roncus. No edemes EEII.",
+        "provescomplementariesing": "Analítica: Leucòcits 12.500 (N 75%), PCR 4.5, resta normal. GSA (FiO2 0.21): pH 7.38, pO2 58, pCO2 45, HCO3 26. Rx tòrax: No condensacions. Signes de hiperinsuflació.",
+        "provescomplementaries": "Cultiu esput: Pendent. GSA control (O2 ulleres nasals 2lpm): pH 7.40, pO2 68, pCO2 42, HCO3 25.",
+        "evolucio": "Evolució favorable amb tractament broncodilatador i corticoteràpia. Millora progressiva de la dispnea i de l'auscultació respiratòria. Es realitza educació sobre tècnica inhalatòria.",
+        "antecedents": "MPOC GOLD II. Hipertensió arterial. Dislipèmia. Exfumador des de fa 5 anys (IPA 45). No al·lèrgies medicamentoses conegudes.",
+        "cursclinic": "Dia 1: Ingrés per agudització de MPOC. Inici de tractament. Dia 2: Millora subjectiva. Dia 3: Evolució favorable, es planteja alta."
+    }
+} 
