@@ -1,37 +1,99 @@
-## HigiaHealthCode
+# HigiaHealthCode API
 
-HigiaHealthCode és una API escalable per a la codificació mèdica automàtica amb CIE-10.
-   
-   ### Funcionalitats
-   - Gestió de diagnòstics i procediments mèdics.
-   - Connexió amb bases de dades PostgreSQL per a l'emmagatzematge de codis mèdics. (Primer sera per pantalla despres ja mirare com guardar-ho)
-   - API REST basada en FastAPI.
-   - Validació de dades amb Pydantic.
-   - Registre i monitoratge de l'activitat amb un sistema de logging.
-   - Probes automatitzades per garantir la qualitat del codi.
-   - Implementació de models de Deep Learning amb PyTorch per a la codificació automàtica.
-   
-   ### Instal·lació
-   ```bash
-   git clone git@github.com:mserretm/HigiaHealthCode.git
-   cd HigiaHealthCode
-   pip install -r requirements.txt
+## Descripció
+API per a la classificació automàtica de codis CIE-10 utilitzant el model Clinical-Longformer. Aquest projecte forma part d'un treball de final de master en l'àmbit de la intel·ligència artificial aplicada a la salut.
 
-   .\venv_tfm\Scripts\activate
-   ```
-   
-   ### Execució
-   ```bash
-   uvicorn app.main:app --reload
-   ```
+## Característiques Principals
+- Predicció automàtica de codis CIE-10
+- Entrenament incremental amb nous casos
+- Entrenament en batch
+- Gestió eficient de la memòria
+- Processament intel·ligent de text clínic
 
-    ### Limitacions
-    Els models entrenats no es pujaran al repository per temes de protecció de dades.
+## Requisits Previs
+- Python 3.8 o superior
+- CUDA (opcional, per acceleració GPU)
+- 8GB RAM mínim (recomanat 16GB)
 
-   ### Col·laboracions
+## Instal·lació
+1. Clonar el repositori:
+```bash
+git clone https://github.com/usuari/higiahealthcode.git
+cd higiahealthcode
+```
 
-    UOC - Univeristat obeta de catalunya
-    XST - Xarxa Sanitaria, Social i Docent de Santa Tecla.
+2. Crear i activar un entorn virtual:
+```bash
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate     # Windows
+```
 
-   ### Llicència
-   Aquest projecte està sota la llicència MIT. Pots modificar i redistribuir el codi, però sempre mencionant l'autor original.
+3. Instal·lar dependències:
+```bash
+pip install -r requirements.txt
+```
+
+## Estructura del Projecte
+```
+app/
+├── data/               # Dades CIE-10 i altres recursos
+├── ml/                # Components del model
+│   ├── engine.py      # Motor principal del model
+│   ├── model.py       # Definició del model
+│   └── utils.py       # Utilitats i funcions auxiliars
+├── routes/            # Endpoints de l'API
+│   ├── predict.py     # Predicció de codis
+│   ├── train.py       # Entrenament incremental
+│   └── train_in_batch.py  # Entrenament en batch
+└── schemas/           # Esquemes de validació
+    └── requests.py    # Definició d'esquemes
+```
+
+## Ús
+1. Iniciar el servidor:
+```bash
+python -m app.main
+```
+
+2. Accedir a la documentació:
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+
+## Endpoints Principals
+- `/predict`: Predicció de codis CIE-10
+- `/train`: Entrenament incremental
+- `/train-batch`: Entrenament en batch
+- `/reset`: Reinicialització del model
+
+## Exemples d'Ús
+### Predicció
+```python
+import requests
+
+url = "http://localhost:8000/predict"
+data = {
+    "case": {
+        "cas": "CAS001",
+        "malaltiaactual": "Pacient amb dolor toràcic...",
+        # ... altres camps
+    }
+}
+response = requests.post(url, json=data)
+print(response.json())
+```
+
+## Consideracions
+- El model utilitza Longformer amb una finestra d'atenció de 4096 tokens
+- Els textos llargs es processen de manera intel·ligent
+- S'eliminen automàticament les etiquetes HTML del text
+- Es normalitzen els textos a minúscules
+- Els models entrenats no es pujaran al repository per temes de protecció de dades.
+
+
+### Col·laboracion
+- UOC - Univeristat obeta de catalunya
+- XST - Xarxa Sanitaria, Social i Docent de Santa Tecla.
+
+### Llicència
+Aquest projecte està sota la llicència MIT. Pots modificar i redistribuir el codi, però sempre mencionant l'autor original.

@@ -71,54 +71,58 @@ async def predict_case(request: PredictRequest):
     try:
         logger.info("Rebuda petició de predicció")
         
-        # Preparar text combinant tots els camps rellevants
-        text_fields = []
+        # Preparar inputs
+        inputs = {}
         
-        # Processar cada camp amb els seus límits
-        fields_config = {
-            'cas': (request.case.cas, None),  # None significa sense límit
-            'edat': (request.case.edat, None),
-            'genere': (request.case.genere, None),
-            'servei': (request.case.servei, None),
-            'motiuingres': (request.case.motiuingres, FIELD_LIMITS['motiuingres']),
-            'malaltiaactual': (request.case.malaltiaactual, FIELD_LIMITS['malaltiaactual']),
-            'antecedents': (request.case.antecedents, FIELD_LIMITS['antecedents']),
-            'exploracio': (request.case.exploracio, FIELD_LIMITS['exploracio']),
-            'provescomplementariesing': (request.case.provescomplementariesing, FIELD_LIMITS['provescomplementariesing']),
-            'provescomplementaries': (request.case.provescomplementaries, FIELD_LIMITS['provescomplementaries']),
-            'evolucio': (request.case.evolucio, FIELD_LIMITS['evolucio']),
-            'cursclinic': (request.case.cursclinic, FIELD_LIMITS['cursclinic'])
+        # Procesar variables categóricas
+        if request.case.genere:
+            value = request.case.genere.strip().upper()
+            if value in GENERE_MAPPING:
+                inputs["genere"] = torch.tensor([GENERE_MAPPING[value]], device=DEVICE)
+
+        if request.case.edat:
+            try:
+                inputs["edat"] = torch.tensor([int(request.case.edat)], device=DEVICE)
+            except ValueError:
+                logger.warning(f"Valor d'edat no vàlid: {request.case.edat}")
+
+        # Procesar campos de texto
+        text_fields = {
+            "motiuingres": "motiu_ingres",
+            "malaltiaactual": "malaltia_actual",
+            "exploracio": "exploracio",
+            "provescomplementariesing": "proves_complementaries_ingres",
+            "provescomplementaries": "proves_complementaries",
+            "evolucio": "evolucio",
+            "antecedents": "antecedents",
+            "cursclinic": "curs_clinic"
         }
+
+        # Procesar cada campo por separado
+        for field, input_key in text_fields.items():
+            value = getattr(request.case, field, None)
+            if value:
+                if field == "cursclinic":
+                    processed_text = process_clinical_course(value, FIELD_LIMITS[field])
+                else:
+                    processed_text = truncate_field(value, FIELD_LIMITS[field])
+
+                encoded = tokenizer(
+                    processed_text,
+                    return_tensors="pt",
+                    truncation=True,
+                    padding="max_length",
+                    max_length=4096
+                ).to(DEVICE)
+
+                inputs[f"{input_key}_input_ids"] = encoded["input_ids"]
+                inputs[f"{input_key}_attention_mask"] = encoded["attention_mask"]
         
-        for field_name, (value, limit) in fields_config.items():
-            if not value:
-                continue
-                
-            if field_name == 'cursclinic':
-                processed_value = process_clinical_course(value, limit) if limit else value
-            else:
-                processed_value = truncate_field(value, limit) if limit else value
-                
-            prefix = field_name.replace('_', ' ').title()
-            text_fields.append(f"{prefix}: {processed_value}")
-        
-        # Filtrar camps buits i unir amb [SEP]
-        full_text = " [SEP] ".join([field for field in text_fields if field.split(": ")[1].strip()])
-        
-        # Tokenitzar
-        inputs = tokenizer(
-            full_text,
-            return_tensors="pt",
-            truncation=True,
-            padding="max_length",
-            max_length=4096
-        ).to(DEVICE)
-        
-        # Predicció
+        # Predicción
         model.eval()
         with torch.no_grad():
-            outputs = model(inputs)
-            probabilities = torch.sigmoid(outputs)
+            code_probs, order_probs = model(inputs)
+            probabilities = torch.sigmoid(code_probs)
         
         # Obtenir prediccions ordenades
         probs_np = probabilities.cpu().numpy()[0]

@@ -3,7 +3,7 @@
 import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from app.routes import predict, train, train_in_batch, reset  
+from app.routes import predict, train, reset  
 import os
 from transformers import LongformerTokenizer, LongformerModel
 
@@ -64,7 +64,6 @@ def create_app() -> FastAPI:
     # Incloure routers
     app.include_router(predict.router, prefix="/predict", tags=["Predicció"])
     app.include_router(train.router, prefix="/train", tags=["Entrenament"])
-    app.include_router(train_in_batch.router, prefix="/train-batch", tags=["Entrenament Batch"])
     app.include_router(reset.router, prefix="/reset", tags=["Reinicialització"])
 
     # Endpoint de benvinguda
