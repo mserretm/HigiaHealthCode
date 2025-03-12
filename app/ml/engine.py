@@ -17,6 +17,7 @@ import numpy as np
 from typing import List, Tuple, Dict, Any, Optional, Union
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
+import torch.nn as nn
 
 # Configurar logging
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 MODEL_DIR = os.path.join(BASE_DIR, "app", "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "model.pt")
 LOCAL_LONGFORMER_PATH = os.path.join(MODEL_DIR, "clinical-longformer")
-DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.path.join(BASE_DIR, "app", "data")
 CIM10MC_PATH = os.path.join(DATA_DIR, "CIM10MC_2024-2025_20231221.txt")
 MODEL_ID = "allenai/longformer-base-4096"
 
@@ -36,25 +37,20 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # Llegir els codis CIM10MC o utilitzar llista per defecte
-if os.path.exists(CIM10MC_PATH):
-    df_codis = pd.read_fwf(
-        CIM10MC_PATH,
-        colspecs=[(17, 32)],  # Codi (15 espais des de posició 17)
-        encoding='latin1',
-        names=['Codi']
-    )
-    
-    # Netejar i obtenir codis únics
-    df_codis['Codi'] = df_codis['Codi'].str.strip()
-    codis_unics = sorted(df_codis['Codi'].unique().tolist())
-    logger.info(f"Carregats {len(codis_unics)} codis únics del fitxer CIM10MC")
-else:
-    # Llista per defecte de codis més comuns
-    codis_unics = [
-        'A41.9', 'E11.9', 'I10', 'I21.9', 'I50.0', 
-        'J18.9', 'J44.9', 'K80.2', 'N39.0', 'R50.9'
-    ]
-    logger.warning(f"No s'ha trobat el fitxer CIM10MC a {CIM10MC_PATH}. Utilitzant llista per defecte de {len(codis_unics)} codis.")
+if not os.path.exists(CIM10MC_PATH):
+    raise FileNotFoundError(f"No s'ha trobat el fitxer CIM10MC a {CIM10MC_PATH}. Aquest fitxer és obligatori.")
+
+df_codis = pd.read_fwf(
+    CIM10MC_PATH,
+    colspecs=[(17, 32)],  # Codi (15 espais des de posició 17)
+    encoding='latin1',
+    names=['Codi']
+)
+
+# Netejar i obtenir codis únics
+df_codis['Codi'] = df_codis['Codi'].str.strip()
+codis_unics = sorted(df_codis['Codi'].unique().tolist())
+logger.info(f"Carregats {len(codis_unics)} codis únics del fitxer CIM10MC")
 
 # Inicialitzar MultiLabelBinarizer
 mlb = MultiLabelBinarizer(classes=codis_unics)
@@ -89,14 +85,49 @@ logger.info("Tokenizer carregat correctament")
 # Cargar o crear el modelo
 if os.path.exists(MODEL_PATH):
     logger.info(f"Carregant model entrenat des de {MODEL_PATH}")
-    checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
-    model = CIE10Classifier(num_labels=NUM_LABELS)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
-    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    mlb = checkpoint['mlb']
+    # Añadir MultiLabelBinarizer a la lista de globals seguros
+    torch.serialization.add_safe_globals(['sklearn.preprocessing._label.MultiLabelBinarizer'])
+    try:
+        checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
+        checkpoint_model_state = checkpoint['model_state_dict']
+        
+        # Obtener dimensiones actuales del modelo guardado
+        old_num_labels = checkpoint_model_state['classifier.weight'].size(0)
+        logger.info(f"Model actual té {old_num_labels} etiquetes")
+        logger.info(f"Es necessiten {NUM_LABELS} etiquetes")
+        
+        # Crear nuevo modelo con las dimensiones actualizadas
+        model = CIE10Classifier(num_labels=NUM_LABELS)
+        
+        # Copiar pesos existentes y expandir para nuevas etiquetas
+        for name, param in checkpoint_model_state.items():
+            if 'classifier' in name or 'order_classifier' in name or 'code_classifier' in name:
+                if 'weight' in name:
+                    # Copiar pesos existentes
+                    model.state_dict()[name][:old_num_labels, :] = param
+                    # Inicializar nuevos pesos
+                    if NUM_LABELS > old_num_labels:
+                        logger.info(f"Expandint capa {name} per {NUM_LABELS - old_num_labels} noves etiquetes")
+                        nn.init.xavier_uniform_(model.state_dict()[name][old_num_labels:, :])
+                elif 'bias' in name:
+                    # Copiar bias existentes
+                    model.state_dict()[name][:old_num_labels] = param
+                    # Inicializar nuevos bias
+                    if NUM_LABELS > old_num_labels:
+                        model.state_dict()[name][old_num_labels:].zero_()
+            else:
+                # Copiar el resto de parámetros tal cual
+                model.state_dict()[name].copy_(param)
+        
+        # Crear nuevo optimizador y scheduler
+        optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+        
+        logger.info("Model expandit correctament amb les noves etiquetes")
+            
+    except Exception as e:
+        logger.error(f"Error al expandir el model: {str(e)}")
+        raise
 else:
     logger.info("Creant nou model de classificació")
     model = CIE10Classifier(num_labels=NUM_LABELS)

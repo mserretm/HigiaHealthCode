@@ -14,4 +14,4 @@ scikit-learn
 asyncpg
 psycopg2
 beautifulsoup4
-lxml
+lxmlg

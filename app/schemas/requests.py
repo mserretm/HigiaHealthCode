@@ -1,25 +1,61 @@
 # app/schemas/requests.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Dict, List, Optional, Union
+import re
 
 class ClinicalCase(BaseModel):
     """
     Model per representar un cas clínic complet.
     """
-    cas: Optional[str] = Field(default="", description="Identificador del cas")
-    edat: Optional[str] = Field(default="", description="Edat del pacient")
-    genere: Optional[str] = Field(default="", description="Gènere del pacient")
-    c_alta: Optional[str] = Field(default="", description="Circumstància d'alta")
-    periode: Optional[str] = Field(default="", description="Període d'atenció")
-    servei: Optional[str] = Field(default="", description="Servei mèdic")
-    motiuingres: Optional[str] = Field(default="", description="Motiu d'ingrés")
-    malaltiaactual: Optional[str] = Field(default="", description="Malaltia actual")
-    exploracio: Optional[str] = Field(default="", description="Exploració física")
-    provescomplementariesing: Optional[str] = Field(default="", description="Proves complementàries a l'ingrés")
-    provescomplementaries: Optional[str] = Field(default="", description="Proves complementàries durant l'estada")
-    evolucio: Optional[str] = Field(default="", description="Evolució clínica")
-    antecedents: Optional[str] = Field(default="", description="Antecedents")
-    cursclinic: Optional[str] = Field(default="", description="Curs clínic")
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    cas: str = Field(..., min_length=1, max_length=50)
+    edat: Optional[str] = Field(default="")
+    genere: Optional[str] = Field(default="")
+    c_alta: Optional[str] = Field(default="")
+    periode: Optional[str] = Field(default="")
+    servei: Optional[str] = Field(default="")
+    motiuingres: Optional[str] = Field(default="", min_length=10)
+    malaltiaactual: Optional[str] = Field(default="", min_length=10)
+    exploracio: Optional[str] = Field(default="")
+    provescomplementariesing: Optional[str] = Field(default="")
+    provescomplementaries: Optional[str] = Field(default="")
+    evolucio: Optional[str] = Field(default="")
+    antecedents: Optional[str] = Field(default="")
+    cursclinic: Optional[str] = Field(default="")
+
+    @field_validator('edat')
+    @classmethod
+    def validate_edat(cls, v: str) -> str:
+        if not v:
+            return v
+        if not v.isdigit() or not (0 <= int(v) <= 120):
+            raise ValueError("L'edat ha de ser un número enter entre 0 i 120 anys")
+        return v
+
+    @field_validator('genere')
+    @classmethod
+    def validate_genere(cls, v: str) -> str:
+        if not v:
+            return v
+        genere_map = {
+            'H': 'H', 'D': 'D', 'HOME': 'H', 'DONA': 'D',
+            'M': 'H', 'F': 'D', 'MASCULÍ': 'H', 'FEMENÍ': 'D',
+            'MASCULINO': 'H', 'FEMENINO': 'D'
+        }
+        v_upper = v.strip().upper()
+        if v_upper not in genere_map:
+            raise ValueError("Gènere no vàlid")
+        return genere_map[v_upper]
+
+    @field_validator('*')
+    @classmethod
+    def sanitize_text(cls, v: str) -> str:
+        if not isinstance(v, str):
+            return v
+        v = re.sub(r'<[^>]+>', '', v)
+        v = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', v)
+        return ' '.join(v.split())
 
 class PredictRequest(BaseModel):
     """
@@ -42,16 +78,3 @@ class TrainRequest(BaseModel):
     Petició per entrenar el model amb un nou cas.
     """
     case: TrainingCase
-
-class BatchTrainCase(BaseModel):
-    """
-    Cas individual per entrenament en batch.
-    """
-    case: TrainingCase
-
-class BatchTrainRequest(BaseModel):
-    """
-    Petició per entrenament en batch.
-    """
-    cases: List[BatchTrainCase]
-    epochs: Optional[int] = Field(default=3, description="Nombre d'èpoques d'entrenament")
