@@ -1,6 +1,7 @@
 fastapi==0.109.2
 uvicorn==0.27.1
 pydantic
+pydantic-settings
 sqlalchemy
 alembic
 python-dotenv
@@ -14,4 +15,6 @@ scikit-learn
 asyncpg
 psycopg2
 beautifulsoup4
-lxmlg
+lxml
+python-jose[cryptography]
+passlib[bcrypt]

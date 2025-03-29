@@ -63,7 +63,7 @@ python -m app.main
 ## Endpoints Principals
 - `/predict`: Predicció de codis CIE-10
 - `/train`: Entrenament incremental
-- `/train-batch`: Entrenament en batch
+- `/train-pending`: Entrenament automàtic dels registres pendents
 - `/reset`: Reinicialització del model
 
 ## Exemples d'Ús
@@ -80,6 +80,15 @@ data = {
     }
 }
 response = requests.post(url, json=data)
+print(response.json())
+```
+
+### Entrenament Automàtic
+```python
+import requests
+
+url = "http://localhost:8000/train-pending/start"
+response = requests.post(url)
 print(response.json())
 ```
 

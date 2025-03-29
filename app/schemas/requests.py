@@ -75,6 +75,63 @@ class TrainingCase(ClinicalCase):
 
 class TrainRequest(BaseModel):
     """
-    Petició per entrenar el model amb un nou cas.
+    Esquema per validar les peticions d'entrenament.
     """
-    case: TrainingCase
+    cas: str = Field(..., min_length=1, max_length=50)
+    dx_revisat: str = Field(..., min_length=1, max_length=10)
+    edat: Optional[str] = Field(default="")
+    genere: Optional[str] = Field(default="")
+    c_alta: Optional[str] = Field(default="")
+    periode: Optional[str] = Field(default="")
+    servei: Optional[str] = Field(default="")
+    motiuingres: Optional[str] = Field(default="")
+    malaltiaactual: Optional[str] = Field(default="")
+    exploracio: Optional[str] = Field(default="")
+    provescomplementariesing: Optional[str] = Field(default="")
+    provescomplementaries: Optional[str] = Field(default="")
+    evolucio: Optional[str] = Field(default="")
+    antecedents: Optional[str] = Field(default="")
+    cursclinic: Optional[str] = Field(default="")
+
+class ValidateRequest(BaseModel):
+    """
+    Esquema per validar les peticions de validació.
+    """
+    cas: str = Field(..., min_length=1, max_length=50)
+    dx_revisat: str = Field(..., min_length=1, max_length=10)
+    edat: Optional[str] = Field(default="")
+    genere: Optional[str] = Field(default="")
+    c_alta: Optional[str] = Field(default="")
+    periode: Optional[str] = Field(default="")
+    servei: Optional[str] = Field(default="")
+    motiuingres: Optional[str] = Field(default="")
+    malaltiaactual: Optional[str] = Field(default="")
+    exploracio: Optional[str] = Field(default="")
+    provescomplementariesing: Optional[str] = Field(default="")
+    provescomplementaries: Optional[str] = Field(default="")
+    evolucio: Optional[str] = Field(default="")
+    antecedents: Optional[str] = Field(default="")
+    cursclinic: Optional[str] = Field(default="")
+
+class EvaluateRequest(BaseModel):
+    """
+    Esquema per validar les peticions d'avaluació.
+    """
+    cas: str = Field(..., min_length=1, max_length=50)
+    dx_revisat: Optional[Union[List[str], str]] = Field(
+        default=None,
+        description="Codis CIE-10 revisats per avaluació, poden ser una llista o string separats per '|'"
+    )
+    edat: Optional[str] = Field(default="")
+    genere: Optional[str] = Field(default="")
+    c_alta: Optional[str] = Field(default="")
+    periode: Optional[str] = Field(default="")
+    servei: Optional[str] = Field(default="")
+    motiuingres: Optional[str] = Field(default="")
+    malaltiaactual: Optional[str] = Field(default="")
+    exploracio: Optional[str] = Field(default="")
+    provescomplementariesing: Optional[str] = Field(default="")
+    provescomplementaries: Optional[str] = Field(default="")
+    evolucio: Optional[str] = Field(default="")
+    antecedents: Optional[str] = Field(default="")
+    cursclinic: Optional[str] = Field(default="")

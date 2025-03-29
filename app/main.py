@@ -1,11 +1,13 @@
 # app/api/main.py
 
 import logging
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
-from app.routes import predict, train, reset  
-import os
-from transformers import LongformerTokenizer, LongformerModel
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from app.routes import router
+from app.core.config import settings
+from app.db.database import init_db
 
 # Configuració del logging
 logging.basicConfig(
@@ -14,62 +16,50 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def verificar_models():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    Verifica si els models necessaris estan descarregats i els descarrega si cal.
+    Gestiona el cicle de vida de l'aplicació.
     """
+    # Startup
+    logger.info("Iniciant l'aplicació...")
     try:
-        # Definir la ruta local del model Longformer
-        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-        LOCAL_LONGFORMER_PATH = os.path.join(BASE_DIR, "models", "clinical-longformer")
-        
-        # Verificar si el model existeix
-        if not os.path.exists(LOCAL_LONGFORMER_PATH):
-            logger.info("No s'ha trobat el model Clinical-Longformer. Iniciant descàrrega...")
-            
-            # Crear el directori si no existeix
-            os.makedirs(LOCAL_LONGFORMER_PATH, exist_ok=True)
-            
-            # Descarregar el tokenizer i el model
-            tokenizer = LongformerTokenizer.from_pretrained("allenai/longformer-base-4096")
-            model = LongformerModel.from_pretrained("allenai/longformer-base-4096")
-            
-            # Guardar el tokenizer i el model localment
-            logger.info(f"Guardant el model a {LOCAL_LONGFORMER_PATH}")
-            tokenizer.save_pretrained(LOCAL_LONGFORMER_PATH)
-            model.save_pretrained(LOCAL_LONGFORMER_PATH)
-            
-            logger.info("Model descarregat i guardat correctament.")
-        else:
-            logger.info("Model Clinical-Longformer trobat correctament.")
-            
-    except Exception as e:
-        logger.error(f"Error en verificar/descarregar els models: {e}")
-        raise
+        await init_db()
+        yield
+    finally:
+        # Shutdown
+        logger.info("Tancant l'aplicació...")
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="API de Models de Codificació",
-        description="API per predicció i entrenament de models de codificació CIE-10. Permet realitzar prediccions, entrenar el model amb nous casos, entrenar en batch i reiniciar el model quan sigui necessari.",
-        version="1.0.0",
+        title=settings.PROJECT_NAME,
+        version=settings.VERSION,
+        description=settings.DESCRIPTION,
         docs_url="/docs",
-        redoc_url="/redoc"
+        redoc_url="/redoc",
+        lifespan=lifespan
+    )
+
+    # Configurar CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     logger.info("Iniciant create_app: carregant recursos...")
 
-    # Verificar i descarregar models si cal
-    verificar_models()
-
-    # Incloure routers
-    app.include_router(predict.router, prefix="/predict", tags=["Predicció"])
-    app.include_router(train.router, prefix="/train", tags=["Entrenament"])
-    app.include_router(reset.router, prefix="/reset", tags=["Reinicialització"])
+    app.include_router(router)
 
     # Endpoint de benvinguda
     @app.get("/")
-    def home():
-        return {"message": "HigiaHealthCode API", "version": "1.0.0"}
+    async def root():
+        """
+        Endpoint principal que retorna informació bàsica de l'API.
+        """
+        return {"message": "API funcionant correctament"}
 
     # Gestor d'errors global
     @app.exception_handler(Exception)
