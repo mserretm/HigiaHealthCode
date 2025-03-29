@@ -1,4 +1,5 @@
 venv_tfm/
 app/__pycache__/
 app/data/CIM10MC_2024-2025_20231221.txt
-app/models/
+app/models/model.pt
+app/models/clinical-longformer/
