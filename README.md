@@ -100,3 +100,7 @@ http://localhost:8000/docs
 - [Documentació de FastAPI](https://fastapi.tiangolo.com/)
 - [Documentació de PyTorch](https://pytorch.org/docs/stable/index.html)
 - [Documentació de Transformers](https://huggingface.co/docs/transformers/index)
+
+
+### Llicència
+Aquest projecte està sota la llicència MIT. Pots modificar i redistribuir el codi, però sempre mencionant l'autor original.

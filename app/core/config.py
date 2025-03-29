@@ -1,16 +1,21 @@
 from pydantic_settings import BaseSettings
 from urllib.parse import quote_plus
+from dotenv import load_dotenv
+import os
+
+# Cargar variables de entorno desde .env
+load_dotenv()
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "Higia Health Code API"
-    VERSION: str = "1.0.0"
-    DESCRIPTION: str = "API per la classificació automàtica de codis CIE-10"
-    API_V1_STR: str = "/api/v1"
+    PROJECT_NAME: str = os.getenv("PROJECT_NAME", "Higia Health Code API")
+    VERSION: str = os.getenv("VERSION", "1.0.0")
+    DESCRIPTION: str = os.getenv("DESCRIPTION", "API per la classificació automàtica de codis CIE-10")
+    API_V1_STR: str = os.getenv("API_V1_STR", "/api/v1")
     
-    POSTGRES_SERVER: str = "localhost"
-    POSTGRES_USER: str = "ia_controled_access"
-    POSTGRES_PASSWORD: str = "Xarxa2025!"
-    POSTGRES_DB: str = "dwh_cubes"
+    POSTGRES_SERVER: str = os.getenv("POSTGRES_SERVER")
+    POSTGRES_USER: str = os.getenv("POSTGRES_USER")
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD")
+    POSTGRES_DB: str = os.getenv("POSTGRES_DB")
     
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
@@ -23,5 +28,6 @@ class Settings(BaseSettings):
     
     class Config:
         case_sensitive = True
+        env_file = ".env"
 
 settings = Settings()

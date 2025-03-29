@@ -658,105 +658,24 @@ class ModelEngine:
         Valida el model amb un conjunt de dades.
         """
         try:
-            # Verificar que el model i el tokenizer estan disponibles
-            if not hasattr(self, 'model') or not hasattr(self, 'tokenizer'):
-                raise RuntimeError("El model o el tokenizer no estan inicialitzats")
-            
-            # Verificar que el model i el tokenizer són vàlids
-            if self.model is None or self.tokenizer is None:
-                raise RuntimeError("El model o el tokenizer són None")
-            
-            # Verificar que el model té els mètodes necessaris
-            if not hasattr(self.model, 'forward'):
-                raise RuntimeError("El model no té el mètode forward")
-            
-            # Verificar que el tokenizer té els mètodes necessaris
-            if not hasattr(self.tokenizer, '__call__'):
-                raise RuntimeError("El tokenizer no té el mètode __call__")
-            
-            # Verificar que el model està al dispositiu correcte
-            if next(self.model.parameters()).device != DEVICE:
-                self.model = self.model.to(DEVICE)
-            
-            # Verificar que el model té les capes necessàries
-            required_layers = ['text_encoder', 'code_classifier', 'order_classifier', 'categorical_embeddings']
-            for layer in required_layers:
-                if not hasattr(self.model, layer):
-                    raise RuntimeError(f"El model no té la capa {layer}")
-            
-            # Verificar que el model té els paràmetres necessaris
-            if not hasattr(self.model, 'num_labels'):
-                raise RuntimeError("El model no té l'atribut num_labels")
-            if self.model.num_labels != NUM_LABELS:
-                raise RuntimeError(f"El model té {self.model.num_labels} etiquetes però es necessiten {NUM_LABELS}")
-            
-            # Verificar que el model està en mode validació
-            self.model.eval()
-            
-            # Netejar i validar el codi CIE-10
-            dx_revisat = validation_data.get('dx_revisat')
-            if not dx_revisat or not isinstance(dx_revisat, str):
-                raise ValueError("El cas ha de tenir un codi CIE-10 revisat")
-                
-            # Logs de depuració
-            logger.debug(f"Codi {validation_data.get('cas', 'N/A')} - dx_revisat original: {dx_revisat}")
-            
-            # Netejar els codis CIE-10 (eliminar separadors buits)
-            codes = [code.strip() for code in dx_revisat.split('|') if code.strip()]
-            logger.debug(f"Codi {validation_data.get('cas', 'N/A')} - codis parsejats: {codes}")
-            
-            if not codes:
-                raise ValueError("No s'han trobat codis CIE-10 vàlids")
-            
-            # Verificar que el MultiLabelBinarizer està disponible
-            if 'mlb' not in globals():
-                raise RuntimeError("El MultiLabelBinarizer no està inicialitzat")
-            
-            # Preparar el text combinant tots els camps
+            # Preparar inputs
             text = self._prepare_text(validation_data)
+            inputs = self.tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=4096,
+                padding=True
+            ).to(DEVICE)
             
-            # Tokenitzar el text
-            try:
-                inputs = self.tokenizer(
-                    text,
-                    return_tensors="pt",
-                    truncation=True,
-                    max_length=4096,
-                    padding=True
-                ).to(DEVICE)
-            except Exception as e:
-                logger.error(f"Error en la tokenització: {str(e)}")
-                raise
+            categorical_inputs = prepare_categorical_inputs(validation_data)
+            inputs.update(categorical_inputs)
             
-            # Preparar les variables categòriques
-            try:
-                categorical_inputs = prepare_categorical_inputs(validation_data)
-                inputs.update(categorical_inputs)
-            except Exception as e:
-                logger.error(f"Error preparant variables categòriques: {str(e)}")
-                raise
-            
-            # Preparar les etiquetes amb els codis netejats
-            try:
-                label_vector = mlb.transform([codes])
-                labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
-            except Exception as e:
-                logger.error(f"Error preparant etiquetes: {str(e)}")
-                raise
-            
-            # Calcular pesos per classe
-            try:
-                class_weights = calculate_class_weights(labels)
-            except Exception as e:
-                logger.error(f"Error calculant pesos per classe: {str(e)}")
-                class_weights = torch.ones(NUM_LABELS).to(DEVICE)
-            
-            # Configurar pèrdua amb pesos dinàmics
-            try:
-                loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=class_weights)
-            except Exception as e:
-                logger.error(f"Error configurant funció de pèrdua: {str(e)}")
-                loss_fn = torch.nn.BCEWithLogitsLoss()
+            # Preparar etiquetes
+            dx_revisat = validation_data.get('dx_revisat', '')
+            codes = [code.strip() for code in dx_revisat.split('|') if code.strip()]
+            label_vector = mlb.transform([codes])
+            labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
             
             # Validar
             try:
@@ -777,21 +696,18 @@ class ModelEngine:
                     if code in predicted_codes_set and prob > 0.8:
                         predicted_codes.append(code)
                 
-                # Obtenir els 5 codis amb més probabilitat
+                # Obtenir els 15 codis amb més probabilitat
                 available_indices = [i for i, code in enumerate(mlb.classes_) if code in predicted_codes_set]
                 if available_indices:
                     available_probs = probabilities[available_indices]
-                    top_5_indices = torch.topk(available_probs, min(5, len(available_probs))).indices
-                    top_5_codes = []
-                    for idx in top_5_indices:
+                    top_15_indices = torch.topk(available_probs, min(15, len(available_probs))).indices
+                    top_15_codes = []
+                    for idx in top_15_indices:
                         code = mlb.classes_[available_indices[idx]]
                         prob = probabilities[available_indices[idx]].item()
-                        top_5_codes.append(f"{code} ({prob:.2%})")
+                        top_15_codes.append(f"{code} ({prob:.2%})")
                 else:
-                    top_5_codes = []
-                
-                # Mostrar informació resumida
-                logger.info(f"Cas {validation_data.get('cas', 'N/A')} - Loss: {loss.item():.4f}")
+                    top_15_codes = []
                 
                 # Calcular mètriques
                 true_positives = ((predictions == 1) & (labels == 1)).sum().item()
@@ -805,14 +721,20 @@ class ModelEngine:
                 correct_preds = (predictions == labels).sum().item()
                 accuracy = correct_preds / total_labels if total_labels > 0 else 0
 
-                logger.info(f"Precisió: {precision:.4f} - Recall: {recall:.4f} - F1: {f1:.4f} - Accuracy: {accuracy:.4f}")
+                # Log compacte amb totes les mètriques i els 15 codis més probables
+                logger.info(f"Cas {validation_data.get('cas', 'N/A')} - Loss: {loss.item():.4f} | "
+                          f"Prec: {precision:.4f} | Rec: {recall:.4f} | F1: {f1:.4f} | Acc: {accuracy:.4f}")
+                logger.info("Top 15 codis més probables:")
+                for code in top_15_codes:
+                    logger.info(f"  - {code}")
                 
                 return {
                     'precision': precision,
                     'recall': recall,
                     'f1': f1,
                     'accuracy': accuracy,
-                    'loss': loss.item()
+                    'loss': loss.item(),
+                    'top_15_codes': top_15_codes
                 }
                 
             except Exception as e:
@@ -1007,198 +929,4 @@ class ModelEngine:
             logger.error(f"Error guardant el model: {str(e)}")
             raise
 
-    async def train_with_validation(
-        self,
-        train_data: List[dict],
-        validation_data: List[dict],
-        test_data: List[dict],
-        epochs: int = 5,
-        batch_size: int = 8,
-        early_stopping_patience: int = 3
-    ) -> Dict[str, Any]:
-        """
-        Entrena el model amb els tres conjunts de dades.
-        """
-        try:
-            from app.ml.utils import EarlyStopping
-            
-            # Inicialitzar early stopping
-            early_stopping = EarlyStopping(
-                patience=early_stopping_patience,
-                min_delta=0.001
-            )
-            
-            # Historial de mètriques
-            history = {
-                'train_loss': [],
-                'train_metrics': [],
-                'val_loss': [],
-                'val_metrics': [],
-                'test_metrics': []
-            }
-            
-            # Entrenament per èpoques
-            for epoch in range(epochs):
-                logger.info(f"\n{'='*50}")
-                logger.info(f"ÈPOCA {epoch + 1}/{epochs}")
-                logger.info(f"{'='*50}")
-                
-                # Entrenament amb dades T
-                self.model.train()
-                train_loss = 0
-                train_metrics = {
-                    'precision': 0,
-                    'recall': 0,
-                    'f1': 0,
-                    'accuracy': 0
-                }
-                
-                # Processar en batches
-                for i in range(0, len(train_data), batch_size):
-                    batch = train_data[i:i + batch_size]
-                    batch_loss = 0
-                    
-                    for case in batch:
-                        # Preparar dades
-                        text = self._prepare_text(case)
-                        inputs = self.tokenizer(
-                            text,
-                            return_tensors="pt",
-                            truncation=True,
-                            max_length=4096,
-                            padding=True
-                        ).to(DEVICE)
-                        
-                        categorical_inputs = prepare_categorical_inputs(case)
-                        inputs.update(categorical_inputs)
-                        
-                        # Preparar etiquetes
-                        dx_revisat = case.get('dx_revisat', '')
-                        codes = [code.strip() for code in dx_revisat.split('|') if code.strip()]
-                        label_vector = mlb.transform([codes])
-                        labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
-                        
-                        # Forward pass
-                        code_probs, _ = self.model(inputs)
-                        loss = loss_fn(code_probs, labels)
-                        
-                        # Backward pass
-                        optimizer.zero_grad()
-                        loss.backward()
-                        optimizer.step()
-                        
-                        batch_loss += loss.item()
-                        
-                        # Calcular mètriques
-                        predictions = torch.sigmoid(code_probs) > 0.5
-                        train_metrics['accuracy'] += (predictions == labels).sum().item() / labels.sum().item()
-                    
-                    train_loss += batch_loss / len(batch)
-                
-                # Promig de mètriques d'entrenament
-                train_loss /= (len(train_data) // batch_size)
-                train_metrics['accuracy'] /= len(train_data)
-                
-                # Validació amb dades V
-                self.model.eval()
-                val_loss = 0
-                val_metrics = {
-                    'precision': 0,
-                    'recall': 0,
-                    'f1': 0,
-                    'accuracy': 0
-                }
-                
-                with torch.no_grad():
-                    for case in validation_data:
-                        # Preparar dades
-                        text = self._prepare_text(case)
-                        inputs = self.tokenizer(
-                            text,
-                            return_tensors="pt",
-                            truncation=True,
-                            max_length=4096,
-                            padding=True
-                        ).to(DEVICE)
-                        
-                        categorical_inputs = prepare_categorical_inputs(case)
-                        inputs.update(categorical_inputs)
-                        
-                        # Preparar etiquetes
-                        dx_revisat = case.get('dx_revisat', '')
-                        codes = [code.strip() for code in dx_revisat.split('|') if code.strip()]
-                        label_vector = mlb.transform([codes])
-                        labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
-                        
-                        # Forward pass
-                        code_probs, _ = self.model(inputs)
-                        loss = loss_fn(code_probs, labels)
-                        
-                        val_loss += loss.item()
-                        
-                        # Calcular mètriques
-                        predictions = torch.sigmoid(code_probs) > 0.5
-                        val_metrics['accuracy'] += (predictions == labels).sum().item() / labels.sum().item()
-                
-                # Promig de mètriques de validació
-                val_loss /= len(validation_data)
-                val_metrics['accuracy'] /= len(validation_data)
-                
-                # Guardar mètriques
-                history['train_loss'].append(train_loss)
-                history['train_metrics'].append(train_metrics)
-                history['val_loss'].append(val_loss)
-                history['val_metrics'].append(val_metrics)
-                
-                # Log de mètriques
-                logger.info(f"\nMÈTRIQUES DE L'ÈPOCA {epoch + 1}:")
-                logger.info(f"Pèrdua d'entrenament (T): {train_loss:.4f}")
-                logger.info(f"Accuracy d'entrenament (T): {train_metrics['accuracy']:.4f}")
-                logger.info(f"Pèrdua de validació (V): {val_loss:.4f}")
-                logger.info(f"Accuracy de validació (V): {val_metrics['accuracy']:.4f}")
-                
-                # Early stopping
-                if early_stopping(val_loss):
-                    logger.info("Early stopping activat")
-                    break
-                
-                # Actualitzar learning rate
-                scheduler.step()
-            
-            # Evaluació final amb dades E
-            logger.info("\nEVALUACIÓ FINAL AMB EL CONJUNT DE TEST (E)")
-            test_metrics = {
-                'precision': 0,
-                'recall': 0,
-                'f1': 0,
-                'accuracy': 0
-            }
-            
-            self.model.eval()
-            with torch.no_grad():
-                for case in test_data:
-                    metrics = self.validate_model(case)
-                    for key in test_metrics:
-                        test_metrics[key] += metrics[key]
-            
-            # Promig de mètriques de test
-            for key in test_metrics:
-                test_metrics[key] /= len(test_data)
-            
-            history['test_metrics'] = test_metrics
-            
-            # Log de mètriques finals
-            logger.info("\nMÈTRIQUES FINALS (E):")
-            logger.info(f"Precisió: {test_metrics['precision']:.4f}")
-            logger.info(f"Recall: {test_metrics['recall']:.4f}")
-            logger.info(f"F1-score: {test_metrics['f1']:.4f}")
-            logger.info(f"Accuracy: {test_metrics['accuracy']:.4f}")
-            
-            # Guardar el model final
-            self.save_model()
-            
-            return history
-            
-        except Exception as e:
-            logger.error(f"Error en l'entrenament amb validació: {str(e)}")
-            raise
+    
