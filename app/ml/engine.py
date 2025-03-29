@@ -9,6 +9,7 @@ import logging
 import torch
 import os
 import shutil
+import warnings
 from transformers import LongformerTokenizer, LongformerModel
 from app.ml.model import CIE10Classifier
 from sklearn.preprocessing import MultiLabelBinarizer
@@ -18,14 +19,51 @@ from typing import List, Tuple, Dict, Any, Optional, Union
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 import torch.nn as nn
+import pickle
+
+# Suprimir advertencias específicas
+warnings.filterwarnings("ignore", message="NVIDIA GeForce RTX.*is not compatible with the current PyTorch installation")
+warnings.filterwarnings("ignore", category=FutureWarning, module="torch.serialization")
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def get_device():
+    """
+    Determina el dispositiu a utilitzar, manejando casos de incompatibilidad CUDA.
+    """
+    if torch.cuda.is_available():
+        try:
+            # Verificar compatibilidad CUDA
+            cuda_capability = torch.cuda.get_device_capability()
+            logger.info(f"Capacitat CUDA detectada: {cuda_capability}")
+            
+            # Si la capacidad es mayor que la soportada, usar CPU
+            if cuda_capability[0] > 9:  # sm_90 es la máxima soportada actualmente
+                logger.warning("La GPU no és compatible amb la versió actual de PyTorch. Utilitzant CPU.")
+                return torch.device("cpu")
+            
+            return torch.device("cuda")
+        except Exception as e:
+            logger.warning(f"Error detectant compatibilitat CUDA: {str(e)}. Utilitzant CPU.")
+            return torch.device("cpu")
+    else:
+        logger.info("CUDA no disponible. Utilitzant CPU.")
+        return torch.device("cpu")
+
+DEVICE = get_device()
 logger.info(f"Utilitzant dispositiu: {DEVICE}")
+
+# Variables globales
+global mlb, tokenizer, model, optimizer, scheduler, predicted_codes_set
+
+# Inicializar el conjunto de códigos predichos
+predicted_codes_set = set()
+
+# Añadir MultiLabelBinarizer a la lista de globals seguros
+torch.serialization.add_safe_globals(['sklearn.preprocessing._label.MultiLabelBinarizer'])
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 MODEL_DIR = os.path.join(BASE_DIR, "app", "models")
@@ -107,11 +145,8 @@ try:
     if os.path.exists(MODEL_PATH):
         logger.info(f"Carregant model entrenat des de {MODEL_PATH}")
         try:
-            # Añadir MultiLabelBinarizer a la lista de globals seguros
-            torch.serialization.add_safe_globals(['sklearn.preprocessing._label.MultiLabelBinarizer'])
-            
-            # Cargar el checkpoint
-            checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+            # Cargar el checkpoint con weights_only=True
+            checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=True)
             
             # Verificar que el checkpoint tiene la estructura correcta
             if not isinstance(checkpoint, dict):
@@ -125,17 +160,22 @@ try:
             
             # Crear optimizador y scheduler
             optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
-            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9, last_epoch=-1)
             
             # Cargar estados del optimizador y scheduler si existen
             if 'optimizer_state_dict' in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if 'scheduler_state_dict' in checkpoint:
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                
+                # Forzar que el scheduler empiece desde el principio
+                scheduler.last_epoch = -1
+            
             # Cargar MultiLabelBinarizer y tokenizer si existen
-            if 'mlb' in checkpoint:
-                mlb = checkpoint['mlb']
+            if 'mlb_state' in checkpoint:
+                mlb_state = checkpoint['mlb_state']
+                mlb = MultiLabelBinarizer(sparse_output=mlb_state['sparse_output'])
+                mlb.classes_ = np.array(mlb_state['classes_'])
+                mlb.fit([[]])
             if 'tokenizer' in checkpoint:
                 tokenizer = checkpoint['tokenizer']
                 
@@ -158,7 +198,10 @@ try:
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
-                'mlb': mlb,
+                'mlb_state': {
+                    'classes_': mlb.classes_.tolist(),
+                    'sparse_output': mlb.sparse_output
+                },
                 'tokenizer': tokenizer
             }, MODEL_PATH)
             logger.info(f"Model inicial guardat a {MODEL_PATH}")
@@ -323,6 +366,52 @@ def prepare_categorical_inputs(case: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         logger.error(f"Caso recibido: {case}")
         raise
 
+def update_predicted_codes(codes: List[str]) -> None:
+    """
+    Actualiza el conjunto de códigos predichos con nuevos códigos.
+    
+    Args:
+        codes: Lista de códigos a añadir
+    """
+    global predicted_codes_set
+    for code in codes:
+        if code in mlb.classes_:
+            predicted_codes_set.add(code)
+    logger.info(f"Conjunt de codis predits actualitzat. Total: {len(predicted_codes_set)}")
+
+def is_code_in_training_history(code: str) -> bool:
+    """
+    Verifica si un codi ha aparegut en l'entrenament.
+    
+    Args:
+        code: Codi CIE-10 a verificar
+        
+    Returns:
+        bool: True si el codi ha aparegut en l'entrenament, False altrament
+    """
+    try:
+        # Verificar si el codi està en el MultiLabelBinarizer
+        if code not in mlb.classes_:
+            logger.warning(f"El codi {code} no està en el catàleg de codis")
+            return False
+            
+        # Verificar si el codi ha aparegut en l'entrenament
+        code_index = mlb.classes_.tolist().index(code)
+        if code_index >= mlb.classes_.shape[0]:
+            logger.warning(f"El codi {code} no ha aparegut en l'entrenament")
+            return False
+            
+        # Verificar si el codi ha estat predit en algun moment
+        if code not in predicted_codes_set:
+            logger.warning(f"El codi {code} no ha estat predit en cap moment")
+            return False
+            
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error verificant el codi {code}: {str(e)}")
+        return False
+
 def save_model(
     model: torch.nn.Module,
     optimizer: Optimizer,
@@ -338,14 +427,28 @@ def save_model(
     try:
         os.makedirs(model_dir, exist_ok=True)
         
+        # Guardar tokenizer
+        tokenizer.save_pretrained(LOCAL_LONGFORMER_PATH)
+        logger.info("Tokenizer guardat correctament")
+        
+        # Guardar mlb
+        mlb_path = os.path.join(MODEL_DIR, 'mlb.pkl')
+        with open(mlb_path, 'wb') as f:
+            pickle.dump(mlb, f)
+        logger.info("MultiLabelBinarizer guardat correctament")
+        
+        # Guardar el conjunt de codis predits
+        predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
+        with open(predicted_codes_path, 'wb') as f:
+            pickle.dump(predicted_codes_set, f)
+        logger.info("Conjunt de codis predits guardat correctament")
+        
+        # Guardar pesos i estat
         torch.save({
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'mlb': mlb,
-            'tokenizer': tokenizer
         }, model_path)
-        
         logger.info(f"Model guardat a {model_path}")
         
     except OSError as e:
@@ -364,13 +467,49 @@ def load_model(model_path: str) -> bool:
             logger.warning(f"No s'ha trobat el model a {model_path}")
             return False
             
-        checkpoint = torch.load(model_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        global mlb, tokenizer
-        mlb = checkpoint['mlb']
-        tokenizer = checkpoint['tokenizer']
+        # Cargar tokenizer
+        global tokenizer
+        tokenizer = LongformerTokenizer.from_pretrained(LOCAL_LONGFORMER_PATH)
+        logger.info("Tokenizer carregat correctament")
+        
+        # Cargar mlb
+        mlb_path = os.path.join(MODEL_DIR, 'mlb.pkl')
+        if os.path.exists(mlb_path):
+            global mlb
+            with open(mlb_path, 'rb') as f:
+                mlb = pickle.load(f)
+            logger.info("MultiLabelBinarizer carregat correctament")
+        
+        # Cargar el conjunt de codis predits
+        predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
+        if os.path.exists(predicted_codes_path):
+            global predicted_codes_set
+            with open(predicted_codes_path, 'rb') as f:
+                predicted_codes_set = pickle.load(f)
+            logger.info(f"Conjunt de codis predits carregat correctament ({len(predicted_codes_set)} codis)")
+        
+        # Cargar pesos i estat
+        checkpoint = torch.load(model_path, map_location=DEVICE)
+        
+        # Cargar el estado del modelo
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            logger.info("Model state dict carregat correctament")
+        
+        # Cargar el estado del optimizador
+        if 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            logger.info("Optimizer state dict carregat correctament")
+        
+        # Cargar el estado del scheduler
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            scheduler.last_epoch = -1  # Forzar que empiece desde el principio
+            logger.info("Scheduler state dict carregat correctament")
+        
+        # Asegurar que el modelo está en el dispositivo correcto
+        model = model.to(DEVICE)
+        logger.info(f"Model mogut a {DEVICE}")
         
         logger.info(f"Model carregat des de {model_path}")
         return True
@@ -405,10 +544,19 @@ def ordenar_codis_per_prediccio(
 
 def predict_case(
     case: Dict[str, Any],
-    threshold: float = 0.5
+    top_k: int = 15,
+    threshold: float = 0.9
 ) -> Dict[str, Any]:
     """
     Realitza prediccions per un cas clínic.
+    
+    Args:
+        case: Diccionari amb les dades del cas clínic
+        top_k: Nombre de codis més probables a retornar
+        threshold: Umbral mínim de probabilitat (90% per defecte)
+        
+    Returns:
+        Dict amb les prediccions ordenades per probabilitat
     """
     try:
         if 'cas' not in case:
@@ -433,23 +581,40 @@ def predict_case(
         # Predicció
         model.eval()
         with torch.no_grad():
-            code_probs, order_probs = model(inputs)
+            code_logits, order_logits = model(inputs)
             
         # Processar prediccions
+        probabilities = torch.sigmoid(code_logits)[0].cpu().numpy()
+        
+        # Filtrar prediccions per threshold i codis vàlids
+        valid_predictions = []
+        for idx, prob in enumerate(probabilities):
+            code = mlb.classes_[idx]
+            # Verificar si el codi ha aparegut en l'entrenament i té probabilitat suficient
+            if is_code_in_training_history(code) and prob > threshold:
+                valid_predictions.append((idx, prob))
+        
+        # Ordenar per probabilitat i prendre els top_k
+        valid_predictions.sort(key=lambda x: x[1], reverse=True)
+        top_k_predictions = valid_predictions[:top_k]
+        
+        # Crear llista de prediccions amb format
         predictions = []
-        code_probs = code_probs[0].cpu().numpy()
-        order_probs = order_probs[0].cpu().numpy()
+        for idx, prob in top_k_predictions:
+            code = mlb.classes_[idx]
+            predictions.append({
+                'code': code,
+                'probability': float(prob)
+            })
         
-        for i, (code_prob, order_prob) in enumerate(zip(code_probs, order_probs)):
-            if code_prob > threshold:
-                code = mlb.classes_[i]
-                predictions.append((code, float(code_prob), float(order_prob)))
-        
-        ordered_codes = ordenar_codis_per_prediccio(predictions, threshold)
+        # Log de prediccions
+        logger.info(f"Cas {case['cas']} - Prediccions amb probabilitat > {threshold:.1%}:")
+        for pred in predictions:
+            logger.info(f"  - {pred['code']}: {pred['probability']:.1%}")
         
         return {
             'cas': case['cas'],
-            'prediccions': ordered_codes
+            'prediccions': predictions
         }
         
     except ValueError as e:
@@ -461,6 +626,37 @@ def predict_case(
     except Exception as e:
         logger.error(f"Error inesperat: {str(e)}")
         raise
+
+def calculate_class_weights(labels: torch.Tensor) -> torch.Tensor:
+    """
+    Calcula els pesos per classe basats en la freqüència.
+    
+    Args:
+        labels: Tensor amb les etiquetes (0s i 1s)
+        
+    Returns:
+        Tensor amb els pesos per classe
+    """
+    try:
+        # Calcular freqüències
+        class_counts = labels.sum(dim=0)
+        total_samples = labels.shape[0]
+        
+        # Calcular pesos inversos a la freqüència
+        weights = total_samples / (class_counts + 1)  # +1 per evitar divisió per zero
+        
+        # Normalitzar pesos
+        weights = weights / weights.mean()
+        
+        # Asegurar que los pesos están en el dispositivo correcto
+        weights = weights.to(DEVICE)
+        
+        return weights
+        
+    except Exception as e:
+        logger.error(f"Error calculant pesos per classe: {str(e)}")
+        # En caso de error, usar pesos uniformes
+        return torch.ones(NUM_LABELS).to(DEVICE)
 
 class ModelEngine:
     def __init__(self):
@@ -628,22 +824,19 @@ class ModelEngine:
             if not dx_revisat or not isinstance(dx_revisat, str):
                 raise ValueError("El cas ha de tenir un codi CIE-10 revisat")
                 
+            # Logs de depuració
+            logger.debug(f"Codi {validation_data.get('cas', 'N/A')} - dx_revisat original: {dx_revisat}")
+            
             # Netejar els codis CIE-10 (eliminar separadors buits)
             codes = [code.strip() for code in dx_revisat.split('|') if code.strip()]
+            logger.debug(f"Codi {validation_data.get('cas', 'N/A')} - codis parsejats: {codes}")
+            
             if not codes:
                 raise ValueError("No s'han trobat codis CIE-10 vàlids")
             
             # Verificar que el MultiLabelBinarizer està disponible
             if 'mlb' not in globals():
                 raise RuntimeError("El MultiLabelBinarizer no està inicialitzat")
-            
-            # Preparar les etiquetes amb els codis netejats
-            try:
-                label_vector = mlb.transform([codes])
-                labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
-            except Exception as e:
-                logger.error(f"Error preparant etiquetes: {str(e)}")
-                raise
             
             # Preparar el text combinant tots els camps
             text = self._prepare_text(validation_data)
@@ -669,84 +862,119 @@ class ModelEngine:
                 logger.error(f"Error preparant variables categòriques: {str(e)}")
                 raise
             
-            # Verificar que l'optimitzador i el scheduler estan disponibles
-            if 'optimizer' not in globals() or 'scheduler' not in globals():
-                raise RuntimeError("L'optimitzador o el scheduler no estan inicialitzats")
-            
-            # Configurar pèrdua
+            # Preparar les etiquetes amb els codis netejats
             try:
-                loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.ones(NUM_LABELS).to(DEVICE) * 2.0)
+                label_vector = mlb.transform([codes])
+                labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
+                logger.info(f"Etiquetes preparades correctament. Shape: {labels.shape}")
             except Exception as e:
-                logger.error(f"Error configurant funció de pèrdua: {str(e)}")
+                logger.error(f"Error preparant etiquetes: {str(e)}")
                 raise
             
-            # Validar per 3 èpoques
-            metrics_history = []
-            for epoch in range(3):
+            # Calcular pesos per classe
+            try:
+                class_weights = calculate_class_weights(labels)
+                logger.info(f"Pesos per classe calculats correctament. Shape: {class_weights.shape}")
+            except Exception as e:
+                logger.error(f"Error calculant pesos per classe: {str(e)}")
+                class_weights = torch.ones(NUM_LABELS).to(DEVICE)
+            
+            # Configurar pèrdua amb pesos dinàmics
+            try:
+                loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=class_weights)
+                logger.info("Funció de pèrdua configurada correctament")
+            except Exception as e:
+                logger.error(f"Error configurant funció de pèrdua: {str(e)}")
+                # En caso de error, usar pérdida sin pesos
+                loss_fn = torch.nn.BCEWithLogitsLoss()
+            
+            # Validar
+            try:
+                # Realitzar forward pass
+                code_logits, order_logits = self.model(inputs)
+                
+                # Calcular pèrdua
+                loss = loss_fn(code_logits, labels)
+                
+                # Calcular prediccions
+                predictions = torch.sigmoid(code_logits) > 0.5
+                
+                # Obtenir codis predits amb probabilitat > 80%
+                predicted_codes = []
+                probabilities = torch.sigmoid(code_logits)[0]
+                for i, prob in enumerate(probabilities):
+                    code = mlb.classes_[i]
+                    # Solo incluir códigos que están en predicted_codes_set
+                    if code in predicted_codes_set and prob > 0.8:
+                        predicted_codes.append(code)
+                
+                # Obtenir els 5 codis amb més probabilitat (solo de los disponibles)
+                available_indices = [i for i, code in enumerate(mlb.classes_) if code in predicted_codes_set]
+                if available_indices:
+                    available_probs = probabilities[available_indices]
+                    top_5_indices = torch.topk(available_probs, min(5, len(available_probs))).indices
+                    top_5_codes = []
+                    for idx in top_5_indices:
+                        code = mlb.classes_[available_indices[idx]]
+                        prob = probabilities[available_indices[idx]].item()
+                        top_5_codes.append(f"{code} ({prob:.2%})")
+                else:
+                    top_5_codes = []
+                
+                # Mostrar informació resumida
+                logger.info(f"Cas {validation_data.get('cas', 'N/A')}")
+                logger.info(f"Loss: {loss.item():.4f}")
+                
+                # Mostrar probabilitat del codi I69 si está disponible
                 try:
-                    # Realitzar forward pass
-                    code_logits, order_logits = self.model(inputs)
-                    
-                    # Calcular pèrdua
-                    loss = loss_fn(code_logits, labels)
-                    
-                    # Calcular prediccions
-                    predictions = torch.sigmoid(code_logits) > 0.5
-                    
-                    # Obtenir codis predits
-                    predicted_codes = []
-                    for i, pred in enumerate(predictions[0]):
-                        if pred:
-                            predicted_codes.append(mlb.classes_[i])
-                    
-                    # Obtenir codis reals
-                    real_codes = []
-                    for i, label in enumerate(labels[0]):
-                        if label:
-                            real_codes.append(mlb.classes_[i])
-                    
-                    # Calcular mètriques
-                    true_positives = ((predictions == 1) & (labels == 1)).sum().item()
-                    false_positives = ((predictions == 1) & (labels == 0)).sum().item()
-                    false_negatives = ((predictions == 0) & (labels == 1)).sum().item()
-                    
-                    precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
-                    recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
-                    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-                    accuracy = (predictions == labels).sum().item() / labels.sum().item() if labels.sum().item() > 0 else 0
-                    
-                    # Guardar mètriques
-                    metrics = {
-                        'precision': precision,
-                        'recall': recall,
-                        'f1': f1,
-                        'accuracy': accuracy,
-                        'loss': loss.item()
-                    }
-                    metrics_history.append(metrics)
-                    
-                    # Mostrar informació resumida
-                    current_lr = optimizer.param_groups[0]['lr']
-                    logger.info(f"Cas {validation_data.get('cas', 'N/A')} - Època {epoch+1}/3")
-                    logger.info(f"Learning Rate: {current_lr:.6f} - Loss: {loss.item():.4f}")
-                    logger.info(f"Codis reals: {', '.join(real_codes)}")
-                    logger.info(f"Codis predits: {', '.join(predicted_codes)}")
-                    logger.info(f"Precisió: {precision:.4f} - Recall: {recall:.4f} - F1: {f1:.4f} - Accuracy: {accuracy:.4f}")
-                    
-                except Exception as e:
-                    logger.error(f"Error durant la validació de l'època {epoch+1}: {str(e)}")
-                    raise
-            
-            # Calcular promig de mètriques
-            avg_metrics = {
-                'precision': sum(m['precision'] for m in metrics_history) / len(metrics_history),
-                'recall': sum(m['recall'] for m in metrics_history) / len(metrics_history),
-                'f1': sum(m['f1'] for m in metrics_history) / len(metrics_history),
-                'accuracy': sum(m['accuracy'] for m in metrics_history) / len(metrics_history),
-                'loss': sum(m['loss'] for m in metrics_history) / len(metrics_history)
-            }
-            
-            return avg_metrics
+                    if 'I69' in predicted_codes_set:
+                        i69_index = mlb.classes_.tolist().index('I69')
+                        i69_prob = probabilities[i69_index].item()
+                        logger.info(f"Probabilitat del codi I69: {i69_prob:.2%}")
+                except ValueError:
+                    logger.info("El codi I69 no està disponible")
+                
+                # Mostrar prediccions amb probabilitat > 80%
+                if predicted_codes:
+                    logger.info(f"Prediccions (>80%): {', '.join(predicted_codes)}")
+                else:
+                    logger.info("No hi ha prediccions amb probabilitat > 80%")
+                
+                # Mostrar top 5 prediccions
+                if top_5_codes:
+                    logger.info("Top 5 prediccions:")
+                    for code in top_5_codes:
+                        logger.info(f"  - {code}")
+                else:
+                    logger.info("No hi ha prediccions disponibles")
+                
+                # Calcular mètriques
+                true_positives = ((predictions == 1) & (labels == 1)).sum().item()
+                false_positives = ((predictions == 1) & (labels == 0)).sum().item()
+                false_negatives = ((predictions == 0) & (labels == 1)).sum().item()
+                
+                precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+                recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+                f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+                total_labels = labels.numel()
+                correct_preds = (predictions == labels).sum().item()
+                accuracy = correct_preds / total_labels if total_labels > 0 else 0
+
+                logger.debug(f"Etiquetes esperades (top activades): {[mlb.classes_[i] for i, val in enumerate(labels[0]) if val == 1.0]}")
+                logger.debug(f"Prediccions activades (>0.7): {[mlb.classes_[i] for i, val in enumerate(torch.sigmoid(code_logits[0])) if val > 0.7 and mlb.classes_[i] in predicted_codes_set]}")
+                logger.info(f"Precisió: {precision:.4f} - Recall: {recall:.4f} - F1: {f1:.4f} - Accuracy: {accuracy:.4f}")
+                
+                return {
+                    'precision': precision,
+                    'recall': recall,
+                    'f1': f1,
+                    'accuracy': accuracy,
+                    'loss': loss.item()
+                }
+                
+            except Exception as e:
+                logger.error(f"Error durant la validació: {str(e)}")
+                raise
                 
         except Exception as e:
             logger.error(f"Error en la validació del cas {validation_data.get('cas', 'N/A')}: {str(e)}")
@@ -793,13 +1021,24 @@ class ModelEngine:
             if not self.model.training:
                 self.model.train()
             
+            # Reiniciar l'optimitzador i el scheduler per cada cas
+            global optimizer, scheduler
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-5)
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9, last_epoch=-1)
+            logger.info(f"Learning rate reiniciat a 2e-5 per el cas {data['cas']}")
+            
             # Netejar i validar el codi CIE-10
             dx_revisat = data.get('dx_revisat')
             if not dx_revisat or not isinstance(dx_revisat, str):
                 raise ValueError("El cas ha de tenir un codi CIE-10 revisat")
                 
+            # Logs de depuració
+            logger.debug(f"Codi {data['cas']} - dx_revisat original: {dx_revisat}")
+            
             # Netejar els codis CIE-10 (eliminar separadors buits)
             codes = [code.strip() for code in dx_revisat.split('|') if code.strip()]
+            logger.debug(f"Codi {data['cas']} - codis parsejats: {codes}")
+            
             if not codes:
                 raise ValueError("No s'han trobat codis CIE-10 vàlids")
             
@@ -807,13 +1046,8 @@ class ModelEngine:
             if 'mlb' not in globals():
                 raise RuntimeError("El MultiLabelBinarizer no està inicialitzat")
             
-            # Preparar les etiquetes amb els codis netejats
-            try:
-                label_vector = mlb.transform([codes])
-                labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
-            except Exception as e:
-                logger.error(f"Error preparant etiquetes: {str(e)}")
-                raise
+            # Actualizar el conjunto de códigos predichos con los nuevos códigos
+            update_predicted_codes(codes)
             
             # Preparar el text combinant tots els camps
             text = self._prepare_text(data)
@@ -839,19 +1073,35 @@ class ModelEngine:
                 logger.error(f"Error preparant variables categòriques: {str(e)}")
                 raise
             
-            # Verificar que l'optimitzador i el scheduler estan disponibles
-            if 'optimizer' not in globals() or 'scheduler' not in globals():
-                raise RuntimeError("L'optimitzador o el scheduler no estan inicialitzats")
-            
-            # Configurar pèrdua
+            # Preparar les etiquetes amb els codis netejats
             try:
-                loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.ones(NUM_LABELS).to(DEVICE) * 2.0)
+                label_vector = mlb.transform([codes])
+                labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
+                logger.info(f"Etiquetes preparades correctament. Shape: {labels.shape}")
             except Exception as e:
-                logger.error(f"Error configurant funció de pèrdua: {str(e)}")
+                logger.error(f"Error preparant etiquetes: {str(e)}")
                 raise
             
+            # Calcular pesos per classe
+            try:
+                class_weights = calculate_class_weights(labels)
+                logger.info(f"Pesos per classe calculats correctament. Shape: {class_weights.shape}")
+            except Exception as e:
+                logger.error(f"Error calculant pesos per classe: {str(e)}")
+                class_weights = torch.ones(NUM_LABELS).to(DEVICE)
+            
+            # Configurar pèrdua amb pesos dinàmics
+            try:
+                loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=class_weights)
+                logger.info("Funció de pèrdua configurada correctament")
+            except Exception as e:
+                logger.error(f"Error configurant funció de pèrdua: {str(e)}")
+                # En caso de error, usar pérdida sin pesos
+                loss_fn = torch.nn.BCEWithLogitsLoss()
+            
             # Entrenar per 3 èpoques
-            for epoch in range(3):
+            epochs = 20
+            for epoch in range(epochs):
                 try:
                     # Realitzar forward pass
                     code_logits, order_logits = self.model(inputs)
@@ -871,7 +1121,7 @@ class ModelEngine:
                     
                     # Mostrar informació resumida
                     current_lr = optimizer.param_groups[0]['lr']
-                    logger.info(f"Cas {data['cas']} - Època {epoch+1}/3 - Learning Rate: {current_lr:.6f} - Loss: {loss.item():.4f}")
+                    logger.info(f"Cas {data['cas']} - Època {epoch+1}/{epochs} - Learning Rate: {current_lr:.8f} - Loss: {loss.item():.6f}")
                     
                 except Exception as e:
                     logger.error(f"Error durant l'entrenament de l'època {epoch+1}: {str(e)}")
@@ -887,6 +1137,12 @@ class ModelEngine:
                 MODEL_PATH,
                 MODEL_DIR
             )
+            
+            # Guardar el conjunto de códigos predichos
+            predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
+            with open(predicted_codes_path, 'wb') as f:
+                pickle.dump(predicted_codes_set, f)
+            logger.info(f"Conjunt de codis predits guardat correctament. Total: {len(predicted_codes_set)}")
             
         except Exception as e:
             logger.error(f"Error en l'entrenament del cas {data['cas']}: {str(e)}")
@@ -938,11 +1194,6 @@ class ModelEngine:
                 'val_metrics': [],
                 'test_metrics': []
             }
-            
-            # Configurar pèrdua
-            loss_fn = torch.nn.BCEWithLogitsLoss(
-                pos_weight=torch.ones(NUM_LABELS).to(DEVICE) * 2.0
-            )
             
             # Entrenament per èpoques
             for epoch in range(epochs):

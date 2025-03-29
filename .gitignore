@@ -3,3 +3,6 @@ app/__pycache__/
 app/data/CIM10MC_2024-2025_20231221.txt
 app/models/model.pt
 app/models/clinical-longformer/
+venv-tfm/
+app/models/mlb.pkl
+app/models/predicted_codes.pkl
