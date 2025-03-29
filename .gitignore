@@ -1,13 +1,10 @@
+# Directorios de entorno virtual
 venv_tfm/
-app/__pycache__/
-app/data/CIM10MC_2024-2025_20231221.txt
-app/models/model.pt
-app/models/clinical-longformer/
 venv-tfm/
-app/models/mlb.pkl
-app/models/predicted_codes.pkl
+ENV/
+env/
 
-# Python
+# Archivos de Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -29,21 +26,33 @@ wheels/
 .installed.cfg
 *.egg
 
-# Entorno virtual
-venv-tfm/
-ENV/
-env/
+# Archivos de configuración
 .env
+.env.*
 
 # IDEs
 .idea/
 .vscode/
 *.swp
 *.swo
+.DS_Store
 
 # Logs
 *.log
+logs/
 
 # Base de datos
 *.db
 *.sqlite3
+
+# Archivos del modelo
+app/models/model.pt
+app/models/clinical-longformer/
+app/models/mlb.pkl
+app/models/predicted_codes.pkl
+app/data/CIM10MC_2024-2025_20231221.txt
+
+# Archivos temporales
+*.tmp
+*.temp
+.cache/

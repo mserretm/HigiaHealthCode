@@ -12,6 +12,12 @@ import shutil
 import warnings
 from transformers import LongformerTokenizer, LongformerModel
 from app.ml.model import CIE10Classifier
+from app.ml.text_processor import ClinicalTextProcessor
+from app.ml.utils import (
+    get_device, prepare_text_inputs, prepare_categorical_inputs,
+    update_predicted_codes, is_code_in_training_history,
+    save_model, calculate_class_weights, calculate_kendall_tau
+)
 from sklearn.preprocessing import MultiLabelBinarizer
 import pandas as pd
 import numpy as np
@@ -29,39 +35,21 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="torch.serializ
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Constants
-def get_device():
-    """
-    Determina el dispositiu a utilitzar, manejando casos de incompatibilidad CUDA.
-    """
-    if torch.cuda.is_available():
-        try:
-            cuda_capability = torch.cuda.get_device_capability()
-            logger.info(f"Capacitat CUDA detectada: {cuda_capability}")
-            
-            if cuda_capability[0] > 9:
-                logger.warning("La GPU no és compatible amb la versió actual de PyTorch. Utilitzant CPU.")
-                return torch.device("cpu")
-            
-            return torch.device("cuda")
-        except Exception as e:
-            logger.warning(f"Error detectant compatibilitat CUDA: {str(e)}. Utilitzant CPU.")
-            return torch.device("cpu")
-    else:
-        logger.info("CUDA no disponible. Utilitzant CPU.")
-        return torch.device("cpu")
+# Suprimir mensajes de padding de transformers
+logging.getLogger("transformers").setLevel(logging.WARNING)
 
+# Constants
 DEVICE = get_device()
 logger.info(f"Utilitzant dispositiu: {DEVICE}")
+
+# Definir la funció de pèrdua
+loss_fn = nn.BCEWithLogitsLoss()
 
 # Variables globals
 global mlb, tokenizer, model, optimizer, scheduler, predicted_codes_set
 
 # Inicialitzar el conjunt de codis predits
 predicted_codes_set = set()
-
-# Afegir MultiLabelBinarizer a la llista de globals segurs
-torch.serialization.add_safe_globals(['sklearn.preprocessing._label.MultiLabelBinarizer'])
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 MODEL_DIR = os.path.join(BASE_DIR, "app", "models")
@@ -107,13 +95,24 @@ if not os.path.exists(LOCAL_LONGFORMER_PATH) or not os.path.exists(config_path):
     if os.path.exists(LOCAL_LONGFORMER_PATH):
         shutil.rmtree(LOCAL_LONGFORMER_PATH)
     
-    tokenizer = LongformerTokenizer.from_pretrained(MODEL_ID)
-    base_model = LongformerModel.from_pretrained(MODEL_ID)
+    # Descarregar amb el nou mètode recomanat
+    tokenizer = LongformerTokenizer.from_pretrained(
+        MODEL_ID,
+        local_files_only=False,
+        force_download=True
+    )
+    base_model = LongformerModel.from_pretrained(
+        MODEL_ID,
+        local_files_only=False,
+        force_download=True
+    )
     
     os.makedirs(LOCAL_LONGFORMER_PATH, exist_ok=True)
     tokenizer.save_pretrained(LOCAL_LONGFORMER_PATH)
     base_model.save_pretrained(LOCAL_LONGFORMER_PATH)
     logger.info("Model descarregat i desat localment")
+else:
+    logger.info("Model ja existeix localment, no es descarregarà")
 
 # Carregar el model des del directori local
 logger.info("Carregant model des del directori local...")
@@ -121,8 +120,17 @@ try:
     if not os.path.exists(LOCAL_LONGFORMER_PATH):
         raise FileNotFoundError(f"No s'ha trobat el directori del model a {LOCAL_LONGFORMER_PATH}")
     
-    tokenizer = LongformerTokenizer.from_pretrained(LOCAL_LONGFORMER_PATH, local_files_only=True)
-    base_model = LongformerModel.from_pretrained(LOCAL_LONGFORMER_PATH, local_files_only=True)
+    # Carregar sempre des del directori local
+    tokenizer = LongformerTokenizer.from_pretrained(
+        LOCAL_LONGFORMER_PATH,
+        local_files_only=True,
+        force_download=False
+    )
+    base_model = LongformerModel.from_pretrained(
+        LOCAL_LONGFORMER_PATH,
+        local_files_only=True,
+        force_download=False
+    )
     model = CIE10Classifier(num_labels=NUM_LABELS)
 
     if os.path.exists(MODEL_PATH):
@@ -200,221 +208,8 @@ except Exception as e:
     logger.error(f"Error inicialitzant el model i el tokenizer: {str(e)}")
     raise
 
-def prepare_text_inputs(case: Dict[str, Any]) -> str:
-    """
-    Prepara els camps de text per la tokenització.
-    
-    Args:
-        case: Diccionari amb les dades del cas clínic
-        
-    Returns:
-        Text preparat per tokenitzar
-    """
-    try:
-        # Definir els camps de text en ordre de prioritat
-        text_fields = [
-            case.get('motiuingres', ''),
-            case.get('malaltiaactual', ''),
-            case.get('exploracio', ''),
-            case.get('provescomplementariesing', ''),
-            case.get('provescomplementaries', ''),
-            case.get('evolucio', ''),
-            case.get('antecedents', ''),
-            case.get('cursclinic', '')
-        ]
-        
-        # Netejar i filtrar els camps buits
-        cleaned_fields = []
-        for field in text_fields:
-            if field is not None:
-                field_str = str(field).strip()
-                if field_str:
-                    cleaned_fields.append(field_str)
-        
-        # Si no hi ha camps vàlids, retornar un text per defecte
-        if not cleaned_fields:
-            logger.warning("No s'han trobat camps de text vàlids")
-            return "No hi ha dades disponibles per aquest cas"
-        
-        # Unir els camps amb el separador
-        text = ' [SEP] '.join(cleaned_fields)
-        
-        # Verificar que el text no està buit
-        if not text.strip():
-            logger.warning("El text preparat està buit")
-            return "No hi ha dades disponibles per aquest cas"
-        
-        # Verificar que el text té contingut significatiu
-        if text == " [SEP] ".join([""] * len(text_fields)):
-            logger.warning("El text només conté valors per defecte")
-            return "No hi ha dades disponibles per aquest cas"
-        
-        # Log del text preparat
-        logger.info(f"Text preparat per tokenitzar: {text[:200]}{'...' if len(text) > 200 else ''}")
-        
-        # Verificar que el text té la longitud mínima necessària
-        if len(text.split()) < 2:
-            logger.warning("El text és massa curt")
-            return "No hi ha dades suficients per aquest cas"
-        
-        # Verificar que el text conté informació clínica
-        clinical_keywords = ['síntoma', 'diagnóstico', 'tratamiento', 'evolución', 'exploración', 'prueba', 'test', 'resultado']
-        has_clinical_info = any(keyword in text.lower() for keyword in clinical_keywords)
-        if not has_clinical_info:
-            logger.warning("El text no conté informació clínica significativa")
-            return "No hi ha dades clíniques suficients per aquest cas"
-        
-        return text
-        
-    except Exception as e:
-        logger.error(f"Error preparant els inputs de text: {str(e)}")
-        logger.error(f"Tipus d'error: {type(e).__name__}")
-        logger.error(f"Detalls de l'error: {str(e)}")
-        raise
-
-def prepare_categorical_inputs(case: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-    """
-    Prepara les variables categòriques pel model.
-    
-    Args:
-        case: Diccionari amb les dades del cas
-        
-    Returns:
-        Dict amb els tensors de les variables categòriques
-    """
-    try:
-        categorical_fields = {
-            'edat': 0,
-            'genere': 0,
-            'c_alta': 0,
-            'periode': 0,
-            'servei': 0
-        }
-        
-        # Actualitzar amb els valors del cas
-        for field in categorical_fields:
-            if field in case:
-                try:
-                    value = case[field]
-                    # Convertir a int si es string
-                    if isinstance(value, str):
-                        value = int(float(value))
-                    else:
-                        value = int(value)
-                    categorical_fields[field] = value
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Valor invàlid per {field}: {case[field]}, usant valor per defecte. Error: {str(e)}")
-        
-        # Convertir a tensors amb la dimensió correcta i asegurar valores válidos
-        result = {}
-        for field, value in categorical_fields.items():
-            # Asegurar que el valor es no negativo
-            value = max(0, value)
-            
-            # Crear tensor y mover al dispositiu correcto
-            tensor = torch.tensor([[value]], device=DEVICE, dtype=torch.long)
-            result[field] = tensor
-            
-            logger.debug(f"Campo {field}: valor={value}, tensor shape={tensor.shape}, device={tensor.device}")
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error en prepare_categorical_inputs: {str(e)}")
-        logger.error(f"Caso recibido: {case}")
-        raise
-
-def update_predicted_codes(codes: List[str]) -> None:
-    """
-    Actualiza el conjunt de codis predichos con nuevos códigos.
-    
-    Args:
-        codes: Lista de códigos a añadir
-    """
-    global predicted_codes_set
-    for code in codes:
-        if code in mlb.classes_:
-            predicted_codes_set.add(code)
-    logger.info(f"Conjunt de codis predits actualitzat. Total: {len(predicted_codes_set)}")
-
-def is_code_in_training_history(code: str) -> bool:
-    """
-    Verifica si un codi ha aparegut en l'entrenament.
-    
-    Args:
-        code: Codi CIE-10 a verificar
-        
-    Returns:
-        bool: True si el codi ha aparegut en l'entrenament, False altrament
-    """
-    try:
-        # Verificar si el codi està en el MultiLabelBinarizer
-        if code not in mlb.classes_:
-            logger.warning(f"El codi {code} no està en el catàleg de codis")
-            return False
-            
-        # Verificar si el codi ha aparegut en l'entrenament
-        code_index = mlb.classes_.tolist().index(code)
-        if code_index >= mlb.classes_.shape[0]:
-            logger.warning(f"El codi {code} no ha aparegut en l'entrenament")
-            return False
-            
-        # Verificar si el codi ha estat predit en algun moment
-        if code not in predicted_codes_set:
-            logger.warning(f"El codi {code} no ha estat predit en cap moment")
-            return False
-            
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error verificant el codi {code}: {str(e)}")
-        return False
-
-def save_model(
-    model: torch.nn.Module,
-    optimizer: Optimizer,
-    scheduler: _LRScheduler,
-    mlb: MultiLabelBinarizer,
-    tokenizer: LongformerTokenizer,
-    model_path: str,
-    model_dir: str
-) -> None:
-    """
-    Guarda el model i els seus components.
-    """
-    try:
-        os.makedirs(model_dir, exist_ok=True)
-        
-        # Guardar tokenizer
-        tokenizer.save_pretrained(LOCAL_LONGFORMER_PATH)
-        logger.info("Tokenizer guardat correctament")
-        
-        # Guardar mlb
-        mlb_path = os.path.join(MODEL_DIR, 'mlb.pkl')
-        with open(mlb_path, 'wb') as f:
-            pickle.dump(mlb, f)
-        logger.info("MultiLabelBinarizer guardat correctament")
-        
-        # Guardar el conjunt de codis predits
-        predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
-        with open(predicted_codes_path, 'wb') as f:
-            pickle.dump(predicted_codes_set, f)
-        logger.info("Conjunt de codis predits guardat correctament")
-        
-        # Guardar pesos i estat
-        torch.save({
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-        }, model_path)
-        logger.info(f"Model guardat a {model_path}")
-        
-    except OSError as e:
-        logger.error(f"Error en guardar el model: {str(e)}")
-        raise
-    except Exception as e:
-        logger.error(f"Error inesperat en guardar el model: {str(e)}")
-        raise
+# Inicialitzar el processador de text
+text_processor = ClinicalTextProcessor()
 
 def predict_case(
     case: Dict[str, Any],
@@ -465,7 +260,7 @@ def predict_case(
         for idx, prob in enumerate(probabilities):
             code = mlb.classes_[idx]
             # Verificar si el codi ha aparegut en l'entrenament i té probabilitat suficient
-            if is_code_in_training_history(code) and prob > threshold:
+            if is_code_in_training_history(code, mlb, predicted_codes_set) and prob > threshold:
                 valid_predictions.append((idx, prob))
         
         # Ordenar per probabilitat i prendre els top_k
@@ -500,37 +295,6 @@ def predict_case(
     except Exception as e:
         logger.error(f"Error inesperat: {str(e)}")
         raise
-
-def calculate_class_weights(labels: torch.Tensor) -> torch.Tensor:
-    """
-    Calcula els pesos per classe basats en la freqüència.
-    
-    Args:
-        labels: Tensor amb les etiquetes (0s i 1s)
-        
-    Returns:
-        Tensor amb els pesos per classe
-    """
-    try:
-        # Calcular freqüències
-        class_counts = labels.sum(dim=0)
-        total_samples = labels.shape[0]
-        
-        # Calcular pesos inversos a la freqüència
-        weights = total_samples / (class_counts + 1)  # +1 per evitar divisió per zero
-        
-        # Normalitzar pesos
-        weights = weights / weights.mean()
-        
-        # Asegurar que los pesos están en el dispositiu correcto
-        weights = weights.to(DEVICE)
-        
-        return weights
-        
-    except Exception as e:
-        logger.error(f"Error calculant pesos per classe: {str(e)}")
-        # En caso de error, usar pesos uniformes
-        return torch.ones(NUM_LABELS).to(DEVICE)
 
 class ModelEngine:
     def __init__(self):
@@ -593,59 +357,55 @@ class ModelEngine:
             logger.error(f"Error inicialitzant el model: {str(e)}")
             raise
 
-    def _prepare_text(self, data: dict) -> str:
+    def _prepare_text(self, case: dict) -> str:
         """
-        Prepara el text combinant tots els camps rellevants.
+        Prepara el text del cas clínic per al model.
         """
         try:
-            # Definir els camps a incloure en l'ordre desitjat
-            fields = [
-                ("Motiu d'ingrés", data.get('motiuingres')),
-                ("Malaltia actual", data.get('malaltiaactual')),
-                ("Exploració", data.get('exploracio')),
-                ("Proves complementàries ingress", data.get('provescomplementariesing')),
-                ("Proves complementàries", data.get('provescomplementaries')),
-                ("Evolució", data.get('evolucio')),
-                ("Antecedents", data.get('antecedents')),
-                ("Curs clínic", data.get('cursclinic')),
-                ("Edat", data.get('edat')),
-                ("Gènere", data.get('genere')),
-                ("Període", data.get('periode')),
-                ("Servei", data.get('servei'))
-            ]
+            # Processar el cas clínic amb el processador de text
+            processed_case = text_processor.process_clinical_case(case)
             
-            # Convertir tots els valors a string i filtrar els buits
+            # Construir el text combinat
             text_parts = []
-            for label, value in fields:
-                # Convertir a string i netejar
-                str_value = str(value).strip() if value is not None else ""
-                # Si el valor està buit, usar "No especificat"
-                if not str_value:
-                    str_value = "No especificat"
-                text_parts.append(f"{label}: {str_value}")
             
-            # Si no hi ha cap camp, retornar un text per defecte
-            if not text_parts:
-                logger.warning("No s'han trobat camps de text vàlids")
-                return "No hi ha dades disponibles per aquest cas"
+            if processed_case.get('motiu_ingres'):
+                text_parts.append(f"Motiu d'ingrés: {processed_case['motiu_ingres']}")
             
-            # Unir tots els camps amb separador
-            text = " | ".join(text_parts)
+            if processed_case.get('malaltia_actual'):
+                text_parts.append(f"Malaltia actual: {processed_case['malaltia_actual']}")
             
-            # Verificar que el text no està buit
-            if not text.strip():
-                logger.warning("El text preparat està buit")
-                return "No hi ha dades disponibles per aquest cas"
+            if processed_case.get('exploracio'):
+                text_parts.append(f"Exploració: {processed_case['exploracio']}")
             
-            # Log del text preparat
-            logger.info(f"Text preparat: {text[:200]}{'...' if len(text) > 200 else ''}")
+            if processed_case.get('proves_complementaries_ingress'):
+                text_parts.append(f"Proves complementàries ingress: {processed_case['proves_complementaries_ingress']}")
             
-            # Verificar que el text té contingut significatiu
-            if text == " | ".join([f"{label}: No especificat" for label, _ in fields]):
-                logger.warning("El text només conté valors per defecte")
-                return "No hi ha dades disponibles per aquest cas"
+            if processed_case.get('proves_complementaries'):
+                text_parts.append(f"Proves complementàries: {processed_case['proves_complementaries']}")
             
-            return text
+            if processed_case.get('evolucio_clinica'):
+                text_parts.append(f"Evolució clínica: {processed_case['evolucio_clinica']}")
+            
+            if processed_case.get('curs_clinic'):
+                text_parts.append(f"Curs clínic: {processed_case['curs_clinic']}")
+            
+            if processed_case.get('diagnostic_ingress'):
+                text_parts.append(f"Diagnòstic ingress: {processed_case['diagnostic_ingress']}")
+            
+            if processed_case.get('diagnostic_alta'):
+                text_parts.append(f"Diagnòstic alta: {processed_case['diagnostic_alta']}")
+            
+            if processed_case.get('tractament'):
+                text_parts.append(f"Tractament: {processed_case['tractament']}")
+            
+            if processed_case.get('recomanacions_alta'):
+                text_parts.append(f"Recomanacions alta: {processed_case['recomanacions_alta']}")
+            
+            # Unir totes les parts amb separador
+            combined_text = " | ".join(text_parts)
+            
+            logger.info(f"Text preparat: {combined_text[:200]}...")
+            return combined_text
             
         except Exception as e:
             logger.error(f"Error preparant el text: {str(e)}")
@@ -658,8 +418,40 @@ class ModelEngine:
         Valida el model amb un conjunt de dades.
         """
         try:
-            # Preparar inputs
-            text = self._prepare_text(validation_data)
+            # Preparar inputs utilitzant el processador de text
+            processed_case = text_processor.process_clinical_case(validation_data)
+            
+            # Construir el text combinat
+            text_parts = []
+            
+            if processed_case.get('motiuingres'):
+                text_parts.append(f"Motiu d'ingrés: {processed_case['motiuingres']}")
+            
+            if processed_case.get('malaltiaactual'):
+                text_parts.append(f"Malaltia actual: {processed_case['malaltiaactual']}")
+            
+            if processed_case.get('exploracio'):
+                text_parts.append(f"Exploració: {processed_case['exploracio']}")
+            
+            if processed_case.get('provescomplementariesing'):
+                text_parts.append(f"Proves complementàries ingress: {processed_case['provescomplementariesing']}")
+            
+            if processed_case.get('provescomplementaries'):
+                text_parts.append(f"Proves complementàries: {processed_case['provescomplementaries']}")
+            
+            if processed_case.get('evolucio'):
+                text_parts.append(f"Evolució: {processed_case['evolucio']}")
+            
+            if processed_case.get('antecedents'):
+                text_parts.append(f"Antecedents: {processed_case['antecedents']}")
+            
+            if processed_case.get('cursclinic'):
+                text_parts.append(f"Curs clínic: {processed_case['cursclinic']}")
+            
+            # Unir totes les parts amb separador
+            text = " | ".join(text_parts)
+            
+            # Tokenitzar el text
             inputs = self.tokenizer(
                 text,
                 return_tensors="pt",
@@ -668,25 +460,38 @@ class ModelEngine:
                 padding=True
             ).to(DEVICE)
             
-            categorical_inputs = prepare_categorical_inputs(validation_data)
-            inputs.update(categorical_inputs)
-            
             # Preparar etiquetes
             dx_revisat = validation_data.get('dx_revisat', '')
             codes = [code.strip() for code in dx_revisat.split('|') if code.strip()]
+            # Limitar a 15 códigos si hay más
+            codes = codes[:15]
+            
+            # Ajustar el batch size para que coincida con el número de códigos (máximo 15)
+            batch_size = min(len(codes), 15)
+            inputs = {k: v.repeat(batch_size, 1) for k, v in inputs.items()}
+            
+            # Preparar variables categòriques
+            categorical_inputs = prepare_categorical_inputs(validation_data)
+            # Ajustar el batch size de las variables categóricas (máximo 15)
+            categorical_inputs = {k: v.repeat(batch_size, 1) for k, v in categorical_inputs.items()}
+            inputs.update(categorical_inputs)
+            
+            # Preparar etiquetes
             label_vector = mlb.transform([codes])
             labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
+            # Ajustar el batch size de las etiquetas para que coincida con el de los inputs
+            labels = labels.repeat(batch_size, 1)
             
             # Validar
             try:
                 # Realitzar forward pass
                 code_logits, order_logits = self.model(inputs)
                 
-                # Calcular pèrdua
-                loss = loss_fn(code_logits, labels)
+                # Calcular pèrdua per classificació de codis
+                code_loss = loss_fn(code_logits, labels)
                 
-                # Calcular prediccions
-                predictions = torch.sigmoid(code_logits) > 0.5
+                # Calcular prediccions de codis
+                code_predictions = torch.sigmoid(code_logits) > 0.5
                 
                 # Obtenir codis predits amb probabilitat > 80%
                 predicted_codes = []
@@ -709,32 +514,114 @@ class ModelEngine:
                 else:
                     top_15_codes = []
                 
-                # Calcular mètriques
-                true_positives = ((predictions == 1) & (labels == 1)).sum().item()
-                false_positives = ((predictions == 1) & (labels == 0)).sum().item()
-                false_negatives = ((predictions == 0) & (labels == 1)).sum().item()
+                # Calcular mètriques per classificació de codis
+                true_positives = ((code_predictions == 1) & (labels == 1)).sum().item()
+                false_positives = ((code_predictions == 1) & (labels == 0)).sum().item()
+                false_negatives = ((code_predictions == 0) & (labels == 1)).sum().item()
                 
                 precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
                 recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
                 f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
                 total_labels = labels.numel()
-                correct_preds = (predictions == labels).sum().item()
+                correct_preds = (code_predictions == labels).sum().item()
                 accuracy = correct_preds / total_labels if total_labels > 0 else 0
 
-                # Log compacte amb totes les mètriques i els 15 codis més probables
-                logger.info(f"Cas {validation_data.get('cas', 'N/A')} - Loss: {loss.item():.4f} | "
-                          f"Prec: {precision:.4f} | Rec: {recall:.4f} | F1: {f1:.4f} | Acc: {accuracy:.4f}")
-                logger.info("Top 15 codis més probables:")
-                for code in top_15_codes:
-                    logger.info(f"  - {code}")
+                # Calcular mètriques per l'order_classifier
+                order_predictions = torch.argmax(order_logits, dim=1)
+                order_accuracy = (order_predictions == torch.arange(len(codes), device=DEVICE)).float().mean().item()
+                
+                # Calcular la pèrdua per l'order_classifier
+                order_loss = torch.nn.CrossEntropyLoss()(order_logits, torch.arange(len(codes), device=DEVICE))
+                
+                # Calcular la distància de Kendall-Tau entre l'ordre predit i l'ordre real
+                predicted_order = order_predictions.cpu().numpy()
+                true_order = np.arange(len(codes))
+                kendall_tau = calculate_kendall_tau(predicted_order, true_order)
+
+                # Log compacte amb totes les mètriques
+                logger.info(f"Cas {validation_data.get('cas', 'N/A')} - "
+                          f"Code Loss: {code_loss.item():.4f} | "
+                          f"Order Loss: {order_loss.item():.4f} | "
+                          f"Prec: {precision:.4f} | Rec: {recall:.4f} | "
+                          f"F1: {f1:.4f} | Acc: {accuracy:.4f} | "
+                          f"Order Acc: {order_accuracy:.4f} | "
+                          f"Kendall-Tau: {kendall_tau:.4f}")
+                
+                # Mostrar codis reals (fins a 15)
+                logger.info("=== CODIS REALS ===")
+                for i, code in enumerate(codes[:15]):
+                    logger.info(f"  {i+1}. {code}")
+                
+                # Obtenir codis predits amb probabilitat > 90%
+                predicted_codes = []
+                probabilities = torch.sigmoid(code_logits)[0]
+                for i, prob in enumerate(probabilities):
+                    code = mlb.classes_[i]
+                    if prob > 0.9:  # Mostrar todos los códigos con prob > 90%
+                        predicted_codes.append((code, prob.item()))
+                
+                # Mostrar codis predits amb probabilitat > 90%
+                if predicted_codes:
+                    logger.info("=== CODIS PREDITS (probabilitat > 90%) ===")
+                    for i, (code, prob) in enumerate(predicted_codes[:15]):
+                        logger.info(f"  {i+1}. {code} ({prob:.1%})")
+                else:
+                    logger.info("=== NO HI HA CODIS PREDITS AMB PROBABILITAT > 90% ===")
+                
+                # Mostrar els 5 codis amb més probabilitat (solo de los entrenados)
+                logger.info("=== TOP 5 CODIS MÉS PROBABLES (ENTRENATS) ===")
+                # Obtener solo los códigos entrenados y sus probabilidades
+                all_codes = []
+                probabilities = torch.sigmoid(code_logits)[0]
+                for i, prob in enumerate(probabilities):
+                    code = mlb.classes_[i]
+                    if code in predicted_codes_set:  # Solo incluir códigos entrenados
+                        all_codes.append((code, prob.item()))
+                
+                # Ordenar por probabilidad y mostrar los top 5
+                all_codes.sort(key=lambda x: x[1], reverse=True)
+                for i, (code, prob) in enumerate(all_codes[:5]):
+                    logger.info(f"  {i+1}. {code} ({prob:.1%})")
+                
+                # Log de l'ordre predit vs real
+                logger.info("=== ORDRE DELS CODIS ===")
+                logger.info("Ordre real (diagnòstic principal → secundaris):")
+                for i, code in enumerate(codes):
+                    logger.info(f"  {i+1}. {code}")
+                
+                logger.info("Ordre predit pel model:")
+                # Asegurar que no se repitan códigos en el orden predicho
+                seen_codes = set()
+                for i, idx in enumerate(predicted_order):
+                    code = codes[idx]
+                    if code not in seen_codes:
+                        seen_codes.add(code)
+                        logger.info(f"  {len(seen_codes)}. {code}")
+                
+                # Calcular i mostrar la distància de Kendall-Tau
+                if len(codes) > 1:
+                    logger.info(f"Distància de Kendall-Tau: {kendall_tau:.4f}")
+                    if kendall_tau > 0.8:
+                        logger.info("  → L'ordre predit és molt similar al real")
+                    elif kendall_tau > 0.5:
+                        logger.info("  → L'ordre predit és moderadament similar al real")
+                    else:
+                        logger.info("  → L'ordre predit difereix significativament del real")
+                else:
+                    logger.info("No es pot calcular la distància de Kendall-Tau amb un sol codi")
                 
                 return {
                     'precision': precision,
                     'recall': recall,
                     'f1': f1,
                     'accuracy': accuracy,
-                    'loss': loss.item(),
-                    'top_15_codes': top_15_codes
+                    'code_loss': code_loss.item(),
+                    'order_loss': order_loss.item(),
+                    'order_accuracy': order_accuracy,
+                    'kendall_tau': kendall_tau,
+                    'top_15_codes': top_15_codes,
+                    'predicted_order': predicted_order.tolist(),
+                    'true_order': true_order.tolist()
                 }
                 
             except Exception as e:
@@ -812,7 +699,35 @@ class ModelEngine:
                 raise RuntimeError("El MultiLabelBinarizer no està inicialitzat")
             
             # Actualizar el conjunt de códigos predichos con los nuevos códigos
-            update_predicted_codes(codes)
+            try:
+                # Cargar el conjunto actual de códigos predichos
+                predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
+                if os.path.exists(predicted_codes_path):
+                    with open(predicted_codes_path, 'rb') as f:
+                        predicted_codes_set = pickle.load(f)
+                    logger.info(f"Conjunt de codis predits carregat. Total actual: {len(predicted_codes_set)}")
+                else:
+                    predicted_codes_set = set()
+                    logger.info("No s'ha trobat el fitxer de codis predits. Creant nou conjunt.")
+                
+                # Contar cuántos códigos nuevos se van a añadir
+                codis_nous = 0
+                for code in codes:
+                    if code not in predicted_codes_set:
+                        predicted_codes_set.add(code)
+                        codis_nous += 1
+                
+                # Solo guardar si hay códigos nuevos
+                if codis_nous > 0:
+                    with open(predicted_codes_path, 'wb') as f:
+                        pickle.dump(predicted_codes_set, f)
+                    logger.info(f"Conjunt de codis predits actualitzat. {codis_nous} codis nous afegits. Total: {len(predicted_codes_set)}")
+                else:
+                    logger.info("No hi ha codis nous per afegir al conjunt de codis predits")
+                
+            except Exception as e:
+                logger.error(f"Error actualitzant el conjunt de codis predits: {str(e)}")
+                raise
             
             # Preparar el text combinant tots els camps
             text = self._prepare_text(data)
@@ -826,6 +741,11 @@ class ModelEngine:
                     max_length=4096,
                     padding=True
                 ).to(DEVICE)
+                
+                # Ajustar el batch size para que coincida con el número de códigos (máximo 15)
+                batch_size = min(len(codes), 15)
+                inputs = {k: v.repeat(batch_size, 1) for k, v in inputs.items()}
+                
             except Exception as e:
                 logger.error(f"Error en la tokenització: {str(e)}")
                 raise
@@ -833,6 +753,8 @@ class ModelEngine:
             # Preparar les variables categòriques
             try:
                 categorical_inputs = prepare_categorical_inputs(data)
+                # Ajustar el batch size de las variables categóricas (máximo 15)
+                categorical_inputs = {k: v.repeat(batch_size, 1) for k, v in categorical_inputs.items()}
                 inputs.update(categorical_inputs)
             except Exception as e:
                 logger.error(f"Error preparant variables categòriques: {str(e)}")
@@ -840,16 +762,20 @@ class ModelEngine:
             
             # Preparar les etiquetes amb els codis netejats
             try:
+                # Limitar a 15 códigos si hay más
+                codes = codes[:15]
                 label_vector = mlb.transform([codes])
                 labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
-                logger.info(f"Etiquetes preparades correctament. Shape: {labels.shape}")
+                # Ajustar el batch size de las etiquetas para que coincida con el de los inputs
+                labels = labels.repeat(batch_size, 1)
+                logger.info(f"Cas {data['cas']} - Codis CIE-10: {' | '.join(codes)}")
             except Exception as e:
                 logger.error(f"Error preparant etiquetes: {str(e)}")
                 raise
             
             # Calcular pesos per classe
             try:
-                class_weights = calculate_class_weights(labels)
+                class_weights = calculate_class_weights(labels, NUM_LABELS)
                 logger.info(f"Pesos per classe calculats correctament. Shape: {class_weights.shape}")
             except Exception as e:
                 logger.error(f"Error calculant pesos per classe: {str(e)}")
@@ -863,18 +789,26 @@ class ModelEngine:
                 logger.error(f"Error configurant funció de pèrdua: {str(e)}")
                 loss_fn = torch.nn.BCEWithLogitsLoss()
             
-            # Entrenar per 20 èpoques
-            epochs = 20
-            for epoch in range(epochs):
+            # Inicialitzar early stopping
+            best_loss = float('inf')
+            patience = 5
+            patience_counter = 0
+            min_delta = 0.001
+            
+            # Entrenar per 20 èpoques o fins que es compleixi early stopping
+            max_epochs = 20
+            for epoch in range(max_epochs):
                 try:
                     # Realitzar forward pass
                     code_logits, order_logits = self.model(inputs)
                     
-                    # Calcular pèrdua
-                    loss = loss_fn(code_logits, labels)
+                    # Calcular pèrdua total (classificació + ordre)
+                    code_loss = loss_fn(code_logits, labels)
+                    order_loss = torch.nn.CrossEntropyLoss()(order_logits, torch.arange(len(codes), device=DEVICE))
+                    total_loss = code_loss + order_loss
                     
                     # Backward pass
-                    loss.backward()
+                    total_loss.backward()
                     
                     # Actualitzar pesos
                     optimizer.step()
@@ -885,13 +819,28 @@ class ModelEngine:
                     
                     # Mostrar informació resumida
                     current_lr = optimizer.param_groups[0]['lr']
-                    logger.info(f"Cas {data['cas']} - Època {epoch+1}/{epochs} - Learning Rate: {current_lr:.8f} - Loss: {loss.item():.6f}")
+                    improvement_indicator = "[✓]" if total_loss.item() < best_loss else "[ ]"
+                    logger.info(f"Època {epoch+1}/{max_epochs} - "
+                              f"LR: {current_lr:.8f} - "
+                              f"Total: {total_loss.item():.6f} - "
+                              f"Code: {code_loss.item():.6f} - "
+                              f"Order: {order_loss.item():.6f} {improvement_indicator}")
                     
+                    # Verificar early stopping
+                    if total_loss.item() < best_loss - min_delta:
+                        best_loss = total_loss.item()
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
+                        if patience_counter >= patience:
+                            logger.info(f"Early stopping activat després de {epoch+1} èpoques sense millora")
+                            break
+                
                 except Exception as e:
                     logger.error(f"Error durant l'entrenament de l'època {epoch+1}: {str(e)}")
                     raise
             
-            # Guardar model després de totes les èpoques
+            # Guardar el model final
             save_model(
                 self.model,
                 optimizer,
@@ -899,8 +848,10 @@ class ModelEngine:
                 mlb,
                 self.tokenizer,
                 MODEL_PATH,
-                MODEL_DIR
+                MODEL_DIR,
+                predicted_codes_set
             )
+            logger.info("Model guardat al final de l'entrenament")
             
             # Guardar el conjunt de códigos predichos
             predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
@@ -928,5 +879,3 @@ class ModelEngine:
         except Exception as e:
             logger.error(f"Error guardant el model: {str(e)}")
             raise
-
-    

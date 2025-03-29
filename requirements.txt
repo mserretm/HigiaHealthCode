@@ -1,5 +1,5 @@
-fastapi==0.109.2
-uvicorn==0.27.1
+fastapi
+uvicorn
 pydantic
 pydantic-settings
 sqlalchemy
@@ -18,3 +18,5 @@ beautifulsoup4
 lxml
 python-jose[cryptography]
 passlib[bcrypt]
+python-multipart
+nltk
