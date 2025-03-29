@@ -9,21 +9,27 @@ import torch.nn as nn
 import os
 import logging
 from transformers import LongformerTokenizer, LongformerModel, LongformerConfig
-from typing import Dict, Any, Tuple, Optional, Union
+from typing import Dict, Any, Tuple, Optional, Union, List
 
 logger = logging.getLogger(__name__)
 
+# Constants
+MODEL_ID = "allenai/longformer-base-4096"
+
 class CIE10Classifier(nn.Module):
     def __init__(self, num_labels: int):
+        """
+        Inicialitza el model amb els paràmetres necessaris.
+        """
         super().__init__()
         self.num_labels = num_labels
         
         # Inicialitzar el model base
         logger.info("Inicialitzant model base Longformer...")
-        self.text_encoder = LongformerModel.from_pretrained("allenai/longformer-base-4096")
+        self.text_encoder = LongformerModel.from_pretrained(MODEL_ID)
         logger.info("Model base inicialitzat correctament")
         
-        # Inicialitzar classificadors
+        # Inicialitzar els classificadors
         logger.info("Inicialitzant classificadors...")
         self.code_classifier = nn.Sequential(
             nn.Linear(768, 512),
@@ -41,7 +47,7 @@ class CIE10Classifier(nn.Module):
         )
         logger.info("Classificador d'ordre inicialitzat")
         
-        # Definir límits para los embeddings categóricos
+        # Definir límits per als embeddings categòrics
         self.embedding_limits = {
             'edat': 100,
             'genere': 3,
@@ -84,10 +90,10 @@ class CIE10Classifier(nn.Module):
         for field, embedding_layer in self.categorical_embeddings.items():
             if field in inputs:
                 try:
-                    # Asegurar que el tensor está en el dispositivo correcto
+                    # Assegurar que el tensor està en el dispositiu correcte
                     field_value = inputs[field].to(text_embeddings.device)
                     
-                    # Validar y ajustar valores
+                    # Validar i ajustar valors
                     field_value = self._validate_and_clip_categorical(field, field_value)
                     
                     # Aplicar embedding

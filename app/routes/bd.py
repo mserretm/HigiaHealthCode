@@ -29,11 +29,3 @@ async def validate_case(case: Case):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/evaluate", response_model=CaseResponse)
-async def evaluate_case(case: Case):
-    try:
-        result = await case_processor.process_evaluate(case)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) 

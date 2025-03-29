@@ -51,7 +51,7 @@ def clean_html_text(text: Union[str, Any]) -> str:
         text = str(text) if text is not None else ""
         
     try:
-        # Eliminar tags HTML
+        # Eliminar etiquetes HTML
         soup = BeautifulSoup(text, 'html.parser')
         clean_text = soup.get_text(separator=' ')
         
@@ -85,21 +85,12 @@ def freeze_bert_layers(
 ) -> None:
     """
     Congela o descongela les capes del model.
-
-    Args:
-        model: El model que conté les capes
-        freeze: Si és True, les capes es congelaran
-        num_unfrozen_layers: Nombre de capes superiors que no es congelaran
-    
-    Raises:
-        ValueError: Si num_unfrozen_layers excedeix el total de capes
     """
     if not hasattr(model, 'encoder') or not hasattr(model.encoder, 'layer'):
         logger.warning("El model no té 'encoder.layer'; no es poden modificar les capes.")
         return
 
     total_layers = len(model.encoder.layer)
-    logger.info(f"Total de capes a l'encoder: {total_layers}")
 
     if num_unfrozen_layers > total_layers:
         raise ValueError(
@@ -111,9 +102,6 @@ def freeze_bert_layers(
     for layer_num, layer in enumerate(model.encoder.layer):
         for param in layer.parameters():
             param.requires_grad = not freeze if layer_num >= num_frozen_layers else False
-        
-        action = 'descongelada' if not freeze and layer_num >= num_frozen_layers else 'congelada'
-        logger.debug(f"Capa {layer_num}: {action}")
 
 def clear_gpu_memory() -> None:
     """
@@ -178,17 +166,12 @@ def process_batch_with_memory_optimization(
 def optimize_model_memory(model: torch.nn.Module) -> None:
     """
     Aplica optimitzacions de memòria al model.
-    
-    Args:
-        model: Model a optimitzar
     """
     if hasattr(model, 'gradient_checkpointing_enable'):
         model.gradient_checkpointing_enable()
-        logger.info("Gradient checkpointing activat")
     
     if hasattr(model, 'config'):
         model.config.use_cache = False
-        logger.info("Cache d'atenció desactivada")
 
 def get_memory_usage() -> Dict[str, float]:
     """
@@ -244,38 +227,6 @@ def process_cie10_codes(code_string: Optional[str]) -> List[str]:
     
     return [code.strip() for code in code_string.split('|') if code.strip()]
 
-class EarlyStopping:
-    """
-    Implementa early stopping pel entrenament.
-    
-    Attributes:
-        patience: Nombre d'èpoques a esperar
-        min_delta: Canvi mínim considerat com a millora
-        counter: Comptador d'èpoques sense millora
-        best_loss: Millor pèrdua registrada
-        early_stop: Indica si cal aturar l'entrenament
-    """
-    
-    def __init__(self, patience: int = 3, min_delta: float = 0.001):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.counter = 0
-        self.best_loss = None
-        self.early_stop = False
-        
-    def __call__(self, val_loss: float) -> bool:
-        if self.best_loss is None:
-            self.best_loss = val_loss
-        elif val_loss > self.best_loss - self.min_delta:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_loss = val_loss
-            self.counter = 0
-        
-        return self.early_stop
-
 def process_clinical_course(text: Union[str, Any], max_length: int = 100000) -> str:
     """
     Processa el curs clínic per extreure la informació més rellevant.
@@ -321,3 +272,72 @@ def process_clinical_course(text: Union[str, Any], max_length: int = 100000) -> 
     # Unir i truncar si cal
     processed_text = "\n\n".join(relevant_sections)
     return processed_text[:max_length]
+
+class EarlyStopping:
+    """
+    Implementa early stopping pel entrenament.
+    
+    Attributes:
+        patience: Nombre d'èpoques a esperar
+        min_delta: Canvi mínim considerat com a millora
+        counter: Comptador d'èpoques sense millora
+        best_loss: Millor pèrdua registrada
+        early_stop: Indica si cal aturar l'entrenament
+    """
+    
+    def __init__(self, patience: int = 3, min_delta: float = 0.001):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+        
+    def __call__(self, val_loss: float) -> bool:
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+        
+        return self.early_stop
+
+def prepare_categorical_inputs(case: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+    """
+    Prepara les variables categòriques pel model.
+    """
+    try:
+        categorical_fields = {
+            'edat': 0,
+            'genere': 0,
+            'c_alta': 0,
+            'periode': 0,
+            'servei': 0
+        }
+        
+        for field in categorical_fields:
+            if field in case:
+                try:
+                    value = case[field]
+                    if isinstance(value, str):
+                        value = int(float(value))
+                    else:
+                        value = int(value)
+                    categorical_fields[field] = value
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Valor invàlid per {field}: {case[field]}, usant valor per defecte. Error: {str(e)}")
+        
+        result = {}
+        for field, value in categorical_fields.items():
+            value = max(0, value)
+            tensor = torch.tensor([[value]], device=DEVICE, dtype=torch.long)
+            result[field] = tensor
+            
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error en prepare_categorical_inputs: {str(e)}")
+        raise

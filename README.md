@@ -1,32 +1,62 @@
-# HigiaHealthCode API
+# Sistema de Classificació Automàtica de Codis CIE-10
 
-## Descripció
-API per a la classificació automàtica de codis CIE-10 utilitzant el model Clinical-Longformer. Aquest projecte forma part d'un treball de final de master en l'àmbit de la intel·ligència artificial aplicada a la salut.
+Sistema de classificació automàtica de codis CIE-10 utilitzant models de deep learning.
 
-## Característiques Principals
-- Predicció automàtica de codis CIE-10
-- Entrenament incremental amb nous casos
-- Entrenament en batch
-- Gestió eficient de la memòria
-- Processament intel·ligent de text clínic
+## Estructura del Projecte
 
-## Requisits Previs
-- Python 3.8 o superior
-- CUDA (opcional, per acceleració GPU)
-- 8GB RAM mínim (recomanat 16GB)
-
-## Instal·lació
-1. Clonar el repositori:
-```bash
-git clone https://github.com/usuari/higiahealthcode.git
-cd higiahealthcode
+```
+app/
+├── core/               # Configuracions i funcions principals
+│   ├── config.py      # Configuracions de l'aplicació
+│   └── logging.py     # Configuració de logging
+├── data/              # Dades i recursos
+│   └── CIM10MC_2024-2025_20231221.txt  # Fitxer de codis CIE-10
+├── db/                # Base de dades i models
+│   ├── database.py    # Configuració de la base de dades
+│   └── models.py      # Models de la base de dades
+├── ml/                # Mòduls de machine learning
+│   ├── engine.py      # Motor principal del model
+│   ├── model.py       # Definició del model neural
+│   └── utils.py       # Utilitats per al processament
+├── models/            # Models entrenats
+│   └── model.pt       # Model entrenat
+├── routes/            # Endpoints de l'API
+│   ├── json/         # Endpoints per a peticions JSON
+│   │   ├── predict.py
+│   │   ├── train.py
+│   │   └── validate.py
+│   └── __init__.py
+├── schemas/           # Esquemes de validació
+│   └── request.py     # Esquemes de peticions
+├── services/          # Serveis de l'aplicació
+│   ├── case_processor.py  # Processament de casos
+│   └── requests.py    # Gestió de peticions
+├── main.py           # Punt d'entrada de l'aplicació
+└── __init__.py
 ```
 
-2. Crear i activar un entorn virtual:
+## Requisits
+
+- Python 3.8+
+- PyTorch
+- Transformers
+- FastAPI
+- SQLAlchemy
+- PostgreSQL
+
+## Instal·lació
+
+1. Clonar el repositori:
 ```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
+git clone [URL_DEL_REPOSITORI]
+cd [NOM_DEL_DIRECTORI]
+```
+
+2. Crear i activar l'entorn virtual:
+```bash
+python -m venv venv-tfm
+source venv-tfm/bin/activate  # Linux/Mac
+venv-tfm\Scripts\activate     # Windows
 ```
 
 3. Instal·lar dependències:
@@ -34,75 +64,39 @@ venv\Scripts\activate     # Windows
 pip install -r requirements.txt
 ```
 
-## Estructura del Projecte
-```
-app/
-├── data/               # Dades CIE-10 i altres recursos
-├── ml/                # Components del model
-│   ├── engine.py      # Motor principal del model
-│   ├── model.py       # Definició del model
-│   └── utils.py       # Utilitats i funcions auxiliars
-├── routes/            # Endpoints de l'API
-│   ├── predict.py     # Predicció de codis
-│   ├── train.py       # Entrenament incremental
-│   └── train_in_batch.py  # Entrenament en batch
-└── schemas/           # Esquemes de validació
-    └── requests.py    # Definició d'esquemes
+4. Configurar la base de dades:
+```bash
+# Crear la base de dades PostgreSQL
+createdb cie10_classifier
+
+# Configurar les variables d'entorn
+cp .env.example .env
+# Editar .env amb les seves credencials
 ```
 
-## Ús
+## Execució
+
 1. Iniciar el servidor:
 ```bash
-python -m app.main
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-2. Accedir a la documentació:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-## Endpoints Principals
-- `/predict`: Predicció de codis CIE-10
-- `/train`: Entrenament incremental
-- `/train-pending`: Entrenament automàtic dels registres pendents
-- `/reset`: Reinicialització del model
-
-## Exemples d'Ús
-### Predicció
-```python
-import requests
-
-url = "http://localhost:8000/predict"
-data = {
-    "case": {
-        "cas": "CAS001",
-        "malaltiaactual": "Pacient amb dolor toràcic...",
-        # ... altres camps
-    }
-}
-response = requests.post(url, json=data)
-print(response.json())
+2. Accedir a la documentació de l'API:
+```
+http://localhost:8000/docs
 ```
 
-### Entrenament Automàtic
-```python
-import requests
+## Funcionalitats
 
-url = "http://localhost:8000/train-pending/start"
-response = requests.post(url)
-print(response.json())
-```
-
-## Consideracions
-- El model utilitza Longformer amb una finestra d'atenció de 4096 tokens
-- Els textos llargs es processen de manera intel·ligent
-- S'eliminen automàticament les etiquetes HTML del text
-- Es normalitzen els textos a minúscules
-- Els models entrenats no es pujaran al repository per temes de protecció de dades.
-
+- Classificació automàtica de codis CIE-10
+- Entrenament del model amb dades personalitzades
+- Validació de prediccions
+- API REST per a integració amb altres sistemes
 
 ### Col·laboracion
 - UOC - Univeristat obeta de catalunya
 - XST - Xarxa Sanitaria, Social i Docent de Santa Tecla.
 
-### Llicència
-Aquest projecte està sota la llicència MIT. Pots modificar i redistribuir el codi, però sempre mencionant l'autor original.
+- [Documentació de FastAPI](https://fastapi.tiangolo.com/)
+- [Documentació de PyTorch](https://pytorch.org/docs/stable/index.html)
+- [Documentació de Transformers](https://huggingface.co/docs/transformers/index)
