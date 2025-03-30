@@ -23,7 +23,7 @@ class CaseProcessor:
         Obtén els casos pendents de predicció.
         """
         return db.query(Case).filter(
-            Case.estat == "pendent",
+            Case.us_estatentrenament == 0,
             Case.dx_revisat.isnot(None)
         ).all()
 
@@ -36,19 +36,19 @@ class CaseProcessor:
                 raise HTTPException(status_code=404, detail=f"No s'ha trobat el cas {data['cas']}")
 
             # Verificar que el cas està pendent
-            if case.estat != "pendent":
+            if case.us_estatentrenament != 0:
                 return {
                     "cas": data["cas"],
                     "prediccions": [],
                     "status": "info",
-                    "message": f"El cas {data['cas']} ja ha estat processat (estat: {case.estat})"
+                    "message": f"El cas {data['cas']} ja ha estat processat (estat: {case.us_estatentrenament})"
                 }
 
             # Realitzar la predicció
-            result = self.engine.predict_case(data)
+            result = self.engine.predict(data)
             
             # Actualitzar l'estat i les prediccions en la base de dades
-            case.estat = "predit"
+            case.us_estatentrenament = 1
             case.dx_prediccio = "|".join([p["code"] for p in result["prediccions"]])
             db.commit()
             
@@ -62,7 +62,7 @@ class CaseProcessor:
             logger.error(f"Error en la predicció del cas {data['cas']}: {str(e)}")
             # En cas d'error, actualizar l'estat
             if 'case' in locals():
-                case.estat = "error"
+                case.us_estatentrenament = 2  # Marcar com a error
                 db.commit()
             return {
                 "cas": data["cas"],

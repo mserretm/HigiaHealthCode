@@ -211,91 +211,6 @@ except Exception as e:
 # Inicialitzar el processador de text
 text_processor = ClinicalTextProcessor()
 
-def predict_case(
-    case: Dict[str, Any],
-    top_k: int = 15,
-    threshold: float = 0.9
-) -> Dict[str, Any]:
-    """
-    Realitza prediccions per un cas clínic.
-    
-    Args:
-        case: Diccionari amb les dades del cas clínic
-        top_k: Nombre de codis més probables a retornar
-        threshold: Umbral mínim de probabilitat (90% per defecte)
-        
-    Returns:
-        Dict amb les prediccions ordenades per probabilitat
-    """
-    try:
-        if 'cas' not in case:
-            raise ValueError("Falta l'identificador del cas")
-            
-        # Preparar inputs
-        text_input = prepare_text_inputs(case)
-        if not text_input.strip():
-            raise ValueError("No s'han trobat dades de text pel cas")
-            
-        tokenized = tokenizer(
-            text_input,
-            return_tensors="pt",
-            truncation=True,
-            padding="max_length",
-            max_length=4096
-        ).to(DEVICE)
-        
-        categorical_inputs = prepare_categorical_inputs(case)
-        inputs = {**tokenized, **categorical_inputs}
-        
-        # Predicció
-        model.eval()
-        with torch.no_grad():
-            code_logits, order_logits = model(inputs)
-            
-        # Processar prediccions
-        probabilities = torch.sigmoid(code_logits)[0].cpu().numpy()
-        
-        # Filtrar prediccions per threshold i codis vàlids
-        valid_predictions = []
-        for idx, prob in enumerate(probabilities):
-            code = mlb.classes_[idx]
-            # Verificar si el codi ha aparegut en l'entrenament i té probabilitat suficient
-            if is_code_in_training_history(code, mlb, predicted_codes_set) and prob > threshold:
-                valid_predictions.append((idx, prob))
-        
-        # Ordenar per probabilitat i prendre els top_k
-        valid_predictions.sort(key=lambda x: x[1], reverse=True)
-        top_k_predictions = valid_predictions[:top_k]
-        
-        # Crear llista de prediccions amb format
-        predictions = []
-        for idx, prob in top_k_predictions:
-            code = mlb.classes_[idx]
-            predictions.append({
-                'code': code,
-                'probability': float(prob)
-            })
-        
-        # Log de prediccions
-        logger.info(f"Cas {case['cas']} - Prediccions amb probabilitat > {threshold:.1%}:")
-        for pred in predictions:
-            logger.info(f"  - {pred['code']}: {pred['probability']:.1%}")
-        
-        return {
-            'cas': case['cas'],
-            'prediccions': predictions
-        }
-        
-    except ValueError as e:
-        logger.error(f"Error de validació: {str(e)}")
-        raise
-    except RuntimeError as e:
-        logger.error(f"Error en la predicció: {str(e)}")
-        raise
-    except Exception as e:
-        logger.error(f"Error inesperat: {str(e)}")
-        raise
-
 class ModelEngine:
     def __init__(self):
         """
@@ -804,3 +719,93 @@ class ModelEngine:
         except Exception as e:
             logger.error(f"Error en l'entrenament del cas {data['cas']}: {str(e)}")
             raise
+
+    def predict(self, data: dict) -> Dict[str, Any]:
+        """
+        Realitza prediccions per un cas clínic sense validar els codis.
+        """
+        try:
+            # Cargar el conjunto de códigos entrenados
+            predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
+            logger.info(f"Intentant carregar el conjunt de codis entrenats des de: {predicted_codes_path}")
+            
+            if os.path.exists(predicted_codes_path):
+                with open(predicted_codes_path, 'rb') as f:
+                    predicted_codes_set = pickle.load(f)
+                logger.info(f"Conjunt de codis entrenats carregat correctament. Total: {len(predicted_codes_set)}")
+                logger.info(f"Codis disponibles per predicció: {sorted(list(predicted_codes_set))}")
+            else:
+                logger.error(f"No s'ha trobat el fitxer de codis entrenats a: {predicted_codes_path}")
+                raise FileNotFoundError("No s'ha trobat el fitxer de codis entrenats (predicted_codes.pkl)")
+            
+            # Preparar el text combinant tots els camps
+            text = prepare_text(data, text_processor)
+            
+            # Tokenitzar el text
+            inputs = self.tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=4096,
+                padding=True
+            ).to(DEVICE)
+            
+            # Preparar entrades categòriques
+            categorical_inputs = prepare_categorical_inputs(data)
+            inputs.update(categorical_inputs)
+            
+            # Fer prediccions
+            with torch.no_grad():
+                code_logits, order_logits = self.model(inputs)
+                
+                # Obtenir prediccions de classificació
+                code_probs = torch.sigmoid(code_logits)
+                
+                # Obtenir prediccions d'ordre
+                order_probs = torch.softmax(order_logits, dim=1)
+                
+                # Crear un diccionari de códigos y sus probabilidades
+                code_prob_dict = {}
+                for i, code in enumerate(mlb.classes_):
+                    if code in predicted_codes_set:
+                        code_prob_dict[code] = code_probs[0, i].item()
+                
+                # Filtrar solo los códigos con probabilidad > 0.9
+                filtered_codes = {code: prob for code, prob in code_prob_dict.items() if prob > 0.9}
+                
+                # Si no hi ha prediccions amb probabilitat > 0.9, retornar llista buida
+                if not filtered_codes:
+                    logger.info("No s'han trobat prediccions amb probabilitat superior al 90%")
+                    return {
+                        "cas": data["cas"],
+                        "prediccions": [],
+                        "status": "info",
+                        "message": "No s'han trobat prediccions amb probabilitat superior al 90%"
+                    }
+                
+                # Crear llista de prediccions amb codi i probabilitat
+                predictions = []
+                for code, prob in filtered_codes.items():
+                    predictions.append({
+                        "code": code,
+                        "probability": prob
+                    })
+                
+                # Ordenar per probabilitat
+                predictions.sort(key=lambda x: x["probability"], reverse=True)
+                
+                return {
+                    "cas": data["cas"],
+                    "prediccions": predictions,
+                    "status": "success",
+                    "message": f"S'han trobat {len(predictions)} prediccions amb probabilitat superior al 90%"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error en la predicció: {str(e)}")
+            return {
+                "cas": data["cas"],
+                "prediccions": [],
+                "status": "error",
+                "message": str(e)
+            }

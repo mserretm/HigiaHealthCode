@@ -54,7 +54,7 @@ async def predict_case(db: Session = Depends(get_db)):
                 
                 # Guardar predicció a la base de dades
                 record.us_estatentrenament = 1
-                record.dx_prediccio = '|'.join(result['prediccions'])
+                record.dx_prediccio = '|'.join([pred['code'] for pred in result['prediccions']])
                 db.commit()
                 
                 processed += 1

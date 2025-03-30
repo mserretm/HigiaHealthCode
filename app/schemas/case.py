@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 class Case(BaseModel):
     cas: str
@@ -18,8 +18,12 @@ class Case(BaseModel):
     servei: Optional[int] = None
     dx_revisat: Optional[str] = None
 
+class Prediction(BaseModel):
+    code: str
+    probability: float
+
 class CaseResponse(BaseModel):
     cas: str
-    prediccions: List[str]
+    prediccions: List[Prediction]
     status: str
     message: str 

@@ -40,7 +40,7 @@ async def predict_case(data: PredictRequest, db: Session = Depends(get_db)):
             cursclinic=case_data['cursclinic'],
             us_registre='E',  # Per avaluació
             us_estatentrenament=1,  # Processat
-            dx_prediccio='|'.join(result['prediccions']),
+            dx_prediccio='|'.join([p['code'] for p in result['prediccions']]),
             us_dataentrenament=datetime.now()
         )
         
