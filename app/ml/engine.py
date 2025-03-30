@@ -16,7 +16,8 @@ from app.ml.text_processor import ClinicalTextProcessor
 from app.ml.utils import (
     get_device, prepare_text_inputs, prepare_categorical_inputs,
     update_predicted_codes, is_code_in_training_history,
-    save_model, calculate_class_weights, calculate_kendall_tau
+    save_model, calculate_class_weights, calculate_kendall_tau,
+    prepare_text
 )
 from sklearn.preprocessing import MultiLabelBinarizer
 import pandas as pd
@@ -48,10 +49,7 @@ logger.info(f"Utilitzant dispositiu: {DEVICE}")
 loss_fn = nn.BCEWithLogitsLoss()
 
 # Variables globals
-global mlb, tokenizer, model, optimizer, scheduler, predicted_codes_set
-
-# Inicialitzar el conjunt de codis predits
-predicted_codes_set = set()
+global mlb, tokenizer, model, optimizer, scheduler
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 MODEL_DIR = os.path.join(BASE_DIR, "app", "models")
@@ -359,76 +357,24 @@ class ModelEngine:
             logger.error(f"Error inicialitzant el model: {str(e)}")
             raise
 
-    def _prepare_text(self, case: dict) -> str:
-        """
-        Prepara el text del cas clínic per al model.
-        """
-        try:
-            # Processar el cas clínic amb el processador de text
-            processed_case = text_processor.process_clinical_case(case)
-            
-            # Construir el text combinat
-            text_parts = []
-            
-            if processed_case.get('motiu_ingres'):
-                text_parts.append(f"Motiu d'ingrés: {processed_case['motiu_ingres']}")
-            
-            if processed_case.get('malaltia_actual'):
-                text_parts.append(f"Malaltia actual: {processed_case['malaltia_actual']}")
-            
-            if processed_case.get('exploracio'):
-                text_parts.append(f"Exploració: {processed_case['exploracio']}")
-            
-            if processed_case.get('proves_complementaries_ingress'):
-                text_parts.append(f"Proves complementàries ingress: {processed_case['proves_complementaries_ingress']}")
-            
-            if processed_case.get('proves_complementaries'):
-                text_parts.append(f"Proves complementàries: {processed_case['proves_complementaries']}")
-            
-            if processed_case.get('evolucio_clinica'):
-                text_parts.append(f"Evolució clínica: {processed_case['evolucio_clinica']}")
-            
-            if processed_case.get('curs_clinic'):
-                text_parts.append(f"Curs clínic: {processed_case['curs_clinic']}")
-            
-            if processed_case.get('diagnostic_ingress'):
-                text_parts.append(f"Diagnòstic ingress: {processed_case['diagnostic_ingress']}")
-            
-            if processed_case.get('diagnostic_alta'):
-                text_parts.append(f"Diagnòstic alta: {processed_case['diagnostic_alta']}")
-            
-            if processed_case.get('tractament'):
-                text_parts.append(f"Tractament: {processed_case['tractament']}")
-            
-            if processed_case.get('recomanacions_alta'):
-                text_parts.append(f"Recomanacions alta: {processed_case['recomanacions_alta']}")
-            
-            # Unir totes les parts amb separador
-            combined_text = " | ".join(text_parts)
-            
-            return combined_text
-            
-        except Exception as e:
-            logger.error(f"Error preparant el text: {str(e)}")
-            logger.error(f"Tipus d'error: {type(e).__name__}")
-            logger.error(f"Detalls de l'error: {str(e)}")
-            raise
-
     def validate_model(self, validation_data: Dict[str, Any]) -> Dict[str, Any]:
         """Valida el model amb un cas clínic."""
         try:
             # Cargar el conjunto de códigos entrenados
             predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
+            logger.info(f"Intentant carregar el conjunt de codis entrenats des de: {predicted_codes_path}")
+            
             if os.path.exists(predicted_codes_path):
                 with open(predicted_codes_path, 'rb') as f:
                     predicted_codes_set = pickle.load(f)
-                logger.info(f"Conjunt de codis entrenats carregat. Total: {len(predicted_codes_set)}")
+                logger.info(f"Conjunt de codis entrenats carregat correctament. Total: {len(predicted_codes_set)}")
+                logger.info(f"Codis disponibles per validació: {sorted(list(predicted_codes_set))}")
             else:
-                logger.error("No s'ha trobat el fitxer de codis entrenats (predicted_codes.pkl)")
-                raise FileNotFoundError("No s'ha trobat el fitxer de codis entrenats")
+                logger.error(f"No s'ha trobat el fitxer de codis entrenats a: {predicted_codes_path}")
+                raise FileNotFoundError("No s'ha trobat el fitxer de codis entrenats (predicted_codes.pkl)")
             
             # Preparar el text combinant tots els camps
-            text = self._prepare_text(validation_data)
+            text = prepare_text(validation_data, text_processor)
             
             # Tokenitzar el text
             inputs = self.tokenizer(
@@ -469,42 +415,32 @@ class ModelEngine:
                 # Calcular pèrdua per classificació de codis
                 code_loss = loss_fn(code_logits, labels)
                 
-                # Calcular prediccions de codis
-                code_predictions = torch.sigmoid(code_logits) > 0.5
-                
-                # Obtenir codis predits amb probabilitat > 80%
+                # Calcular mètriques de classificació
+                code_predictions = torch.sigmoid(code_logits)[0]
                 predicted_codes = []
-                probabilities = torch.sigmoid(code_logits)[0]
-                for i, prob in enumerate(probabilities):
+                for i, prob in enumerate(code_predictions):
                     code = mlb.classes_[i]
-                    if code in predicted_codes_set and prob > 0.8:
+                    if code in predicted_codes_set and prob > 0.5:
                         predicted_codes.append(code)
                 
-                # Obtenir els 15 codis amb més probabilitat
-                available_indices = [i for i, code in enumerate(mlb.classes_) if code in predicted_codes_set]
-                if available_indices:
-                    available_probs = probabilities[available_indices]
-                    top_15_indices = torch.topk(available_probs, min(15, len(available_probs))).indices
-                    top_15_codes = []
-                    for idx in top_15_indices:
-                        code = mlb.classes_[available_indices[idx]]
-                        prob = probabilities[available_indices[idx]].item()
-                        top_15_codes.append(f"{code} ({prob:.2%})")
-                else:
-                    top_15_codes = []
+                # Crear vectors binaris per les prediccions i les etiquetes reals
+                y_true = set(codes)
+                y_pred = set(predicted_codes)
                 
-                # Calcular mètriques per classificació de codis
-                true_positives = ((code_predictions == 1) & (labels == 1)).sum().item()
-                false_positives = ((code_predictions == 1) & (labels == 0)).sum().item()
-                false_negatives = ((code_predictions == 0) & (labels == 1)).sum().item()
+                # Calcular mètriques de classificació
+                true_positives = len(y_true.intersection(y_pred))
+                false_positives = len(y_pred - y_true)
+                false_negatives = len(y_true - y_pred)
                 
-                precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
-                recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+                # Calcular accuracy
+                total_codes = len(y_true.union(y_pred))
+                accuracy = true_positives / total_codes if total_codes > 0 else 0
+                
+                # Calcular precision, recall i F1
+                precision = true_positives / len(y_pred) if y_pred else 0
+                recall = true_positives / len(y_true) if y_true else 0
                 f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-                total_labels = labels.numel()
-                correct_preds = (code_predictions == labels).sum().item()
-                accuracy = correct_preds / total_labels if total_labels > 0 else 0
-
+                
                 # Calcular mètriques per l'order_classifier
                 order_predictions = torch.argmax(order_logits, dim=1)
                 
@@ -591,32 +527,62 @@ class ModelEngine:
                 else:
                     logger.info("→ No es pot calcular la distància de Kendall-Tau amb un sol codi")
                 
-                # Mostrar mètriques
-                logger.info("→ Mètriques:")
+                # Obtenir els 15 codis amb més probabilitat
+                available_indices = [i for i, code in enumerate(mlb.classes_) if code in predicted_codes_set]
+                if available_indices:
+                    available_probs = probabilities[available_indices]
+                    top_15_indices = torch.topk(available_probs, min(15, len(available_probs))).indices
+                    top_15_codes = []
+                    for idx in top_15_indices:
+                        code = mlb.classes_[available_indices[idx]]
+                        prob = probabilities[available_indices[idx]].item()
+                        top_15_codes.append(f"{code} ({prob:.2%})")
+                else:
+                    top_15_codes = []
+                
+                # Mostrar mètriques de classificació
+                logger.info("→ Mètriques de Classificació:")
+                logger.info(f"   • Accuracy:  {accuracy:.2f}")
                 logger.info(f"   • Precision: {precision:.2f}")
                 logger.info(f"   • Recall:    {recall:.2f}")
                 logger.info(f"   • F1 Score:  {f1:.2f}")
-                logger.info(f"   • Accuracy:  {accuracy:.2f}")
+                
+                # Mostrar mètriques d'ordre
+                logger.info("→ Mètriques d'Ordre:")
+                logger.info(f"   • Order Accuracy: {order_accuracy:.2f}")
+                logger.info(f"   • Kendall-Tau:    {kendall_tau:.2f}")
                 
                 # Mostrar pèrdues
                 logger.info("→ Pèrdues:")
                 logger.info(f"   • Code Loss:  {code_loss.item():.4f}")
                 logger.info(f"   • Order Loss: {order_loss.item():.4f}")
-                logger.info(f"   • Order Acc:  {order_accuracy:.2f}")
                 
-                return {
-                    'precision': precision,
-                    'recall': recall,
-                    'f1': f1,
-                    'accuracy': accuracy,
-                    'code_loss': code_loss.item(),
-                    'order_loss': order_loss.item(),
-                    'order_accuracy': order_accuracy,
-                    'kendall_tau': kendall_tau,
-                    'top_15_codes': top_15_codes,
-                    'predicted_order': predicted_order.tolist(),
-                    'true_order': true_order.tolist()
+                # Crear el diccionari de retorn amb totes les mètriques
+                result = {
+                    'metrics': {
+                        'classification': {
+                            'accuracy': float(accuracy),
+                            'precision': float(precision),
+                            'recall': float(recall),
+                            'f1': float(f1)
+                        },
+                        'order': {
+                            'accuracy': float(order_accuracy),
+                            'kendall_tau': float(kendall_tau)
+                        }
+                    },
+                    'losses': {
+                        'code_loss': float(code_loss.item()),
+                        'order_loss': float(order_loss.item())
+                    },
+                    'predictions': {
+                        'top_15_codes': top_15_codes,
+                        'predicted_order': [codes[i] for i in unique_predicted_order],
+                        'true_order': codes
+                    }
                 }
+                
+                return result
                 
             except Exception as e:
                 logger.error(f"Error durant la validació: {str(e)}")
@@ -671,19 +637,14 @@ class ModelEngine:
             global optimizer, scheduler
             optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-5)
             scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9, last_epoch=-1)
-            logger.info(f"Learning rate reiniciat a 2e-5 per el cas {data['cas']}")
             
             # Netejar i validar el codi CIE-10
             dx_revisat = data.get('dx_revisat')
             if not dx_revisat or not isinstance(dx_revisat, str):
                 raise ValueError("El cas ha de tenir un codi CIE-10 revisat")
-                
-            # Logs de depuració
-            logger.debug(f"Codi {data['cas']} - dx_revisat original: {dx_revisat}")
             
             # Netejar els codis CIE-10 (eliminar separadors buits)
             codes = [code.strip() for code in dx_revisat.split('|') if code.strip()]
-            logger.debug(f"Codi {data['cas']} - codis parsejats: {codes}")
             
             if not codes:
                 raise ValueError("No s'han trobat codis CIE-10 vàlids")
@@ -696,13 +657,12 @@ class ModelEngine:
             try:
                 # Cargar el conjunto actual de códigos predichos
                 predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
+                
                 if os.path.exists(predicted_codes_path):
                     with open(predicted_codes_path, 'rb') as f:
                         predicted_codes_set = pickle.load(f)
-                    logger.info(f"Conjunt de codis predits carregat. Total actual: {len(predicted_codes_set)}")
                 else:
                     predicted_codes_set = set()
-                    logger.info("No s'ha trobat el fitxer de codis predits. Creant nou conjunt.")
                 
                 # Contar cuántos códigos nuevos se van a añadir
                 codis_nous = 0
@@ -715,16 +675,14 @@ class ModelEngine:
                 if codis_nous > 0:
                     with open(predicted_codes_path, 'wb') as f:
                         pickle.dump(predicted_codes_set, f)
-                    logger.info(f"Conjunt de codis predits actualitzat. {codis_nous} codis nous afegits. Total: {len(predicted_codes_set)}")
-                else:
-                    logger.info("No hi ha codis nous per afegir al conjunt de codis predits")
+                    logger.info(f"S'han afegit {codis_nous} codis nous al conjunt de codis predits")
                 
             except Exception as e:
                 logger.error(f"Error actualitzant el conjunt de codis predits: {str(e)}")
                 raise
             
             # Preparar el text combinant tots els camps
-            text = self._prepare_text(data)
+            text = prepare_text(data, text_processor)
             
             # Tokenitzar el text
             try:
@@ -762,7 +720,6 @@ class ModelEngine:
                 labels = torch.from_numpy(np.array(label_vector)).float().to(DEVICE)
                 # Ajustar el batch size de las etiquetas para que coincida con el de los inputs
                 labels = labels.repeat(batch_size, 1)
-                logger.info(f"Cas {data['cas']} - Codis CIE-10: {' | '.join(codes)}")
             except Exception as e:
                 logger.error(f"Error preparant etiquetes: {str(e)}")
                 raise
@@ -770,7 +727,6 @@ class ModelEngine:
             # Calcular pesos per classe
             try:
                 class_weights = calculate_class_weights(labels, NUM_LABELS)
-                logger.info(f"Pesos per classe calculats correctament. Shape: {class_weights.shape}")
             except Exception as e:
                 logger.error(f"Error calculant pesos per classe: {str(e)}")
                 class_weights = torch.ones(NUM_LABELS).to(DEVICE)
@@ -778,7 +734,6 @@ class ModelEngine:
             # Configurar pèrdua amb pesos dinàmics
             try:
                 loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=class_weights)
-                logger.info("Funció de pèrdua configurada correctament")
             except Exception as e:
                 logger.error(f"Error configurant funció de pèrdua: {str(e)}")
                 loss_fn = torch.nn.BCEWithLogitsLoss()
@@ -845,31 +800,7 @@ class ModelEngine:
                 MODEL_DIR,
                 predicted_codes_set
             )
-            logger.info("Model guardat al final de l'entrenament")
-            
-            # Guardar el conjunt de códigos predichos
-            predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
-            with open(predicted_codes_path, 'wb') as f:
-                pickle.dump(predicted_codes_set, f)
-            logger.info(f"Conjunt de codis predits guardat correctament. Total: {len(predicted_codes_set)}")
             
         except Exception as e:
             logger.error(f"Error en l'entrenament del cas {data['cas']}: {str(e)}")
-            raise
-
-    def save_model(self):
-        """
-        Guarda el model entrenat.
-        """
-        try:
-            BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            LOCAL_LONGFORMER_PATH = os.path.join(BASE_DIR, "models", "clinical-longformer")
-            
-            self.model.save_pretrained(LOCAL_LONGFORMER_PATH)
-            self.tokenizer.save_pretrained(LOCAL_LONGFORMER_PATH)
-            
-            logger.info("Model guardat correctament")
-            
-        except Exception as e:
-            logger.error(f"Error guardant el model: {str(e)}")
             raise

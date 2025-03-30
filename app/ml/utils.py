@@ -9,7 +9,10 @@ from sklearn.preprocessing import MultiLabelBinarizer
 import os
 import pickle
 from transformers import LongformerTokenizer
+from app.ml.text_processor import ClinicalTextProcessor
 
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -623,3 +626,65 @@ def calculate_kendall_tau(predicted_order: np.ndarray, true_order: np.ndarray) -
     except Exception as e:
         logger.error(f"Error calculant Kendall-Tau: {str(e)}")
         return 0.0
+
+def prepare_text(case: dict, text_processor: ClinicalTextProcessor) -> str:
+    """
+    Prepara el text del cas clínic per al model.
+    
+    Args:
+        case: Diccionari amb les dades del cas clínic
+        text_processor: Instància del processador de text
+        
+    Returns:
+        str: Text combinat del cas clínic
+    """
+    try:
+        # Processar el cas clínic amb el processador de text
+        processed_case = text_processor.process_clinical_case(case)
+        
+        # Construir el text combinat
+        text_parts = []
+        
+        if processed_case.get('motiu_ingres'):
+            text_parts.append(f"Motiu d'ingrés: {processed_case['motiu_ingres']}")
+        
+        if processed_case.get('malaltia_actual'):
+            text_parts.append(f"Malaltia actual: {processed_case['malaltia_actual']}")
+        
+        if processed_case.get('exploracio'):
+            text_parts.append(f"Exploració: {processed_case['exploracio']}")
+        
+        if processed_case.get('proves_complementaries_ingress'):
+            text_parts.append(f"Proves complementàries ingress: {processed_case['proves_complementaries_ingress']}")
+        
+        if processed_case.get('proves_complementaries'):
+            text_parts.append(f"Proves complementàries: {processed_case['proves_complementaries']}")
+        
+        if processed_case.get('evolucio_clinica'):
+            text_parts.append(f"Evolució clínica: {processed_case['evolucio_clinica']}")
+        
+        if processed_case.get('curs_clinic'):
+            text_parts.append(f"Curs clínic: {processed_case['curs_clinic']}")
+        
+        if processed_case.get('diagnostic_ingress'):
+            text_parts.append(f"Diagnòstic ingress: {processed_case['diagnostic_ingress']}")
+        
+        if processed_case.get('diagnostic_alta'):
+            text_parts.append(f"Diagnòstic alta: {processed_case['diagnostic_alta']}")
+        
+        if processed_case.get('tractament'):
+            text_parts.append(f"Tractament: {processed_case['tractament']}")
+        
+        if processed_case.get('recomanacions_alta'):
+            text_parts.append(f"Recomanacions alta: {processed_case['recomanacions_alta']}")
+        
+        # Unir totes les parts amb separador
+        combined_text = " | ".join(text_parts)
+        
+        return combined_text
+        
+    except Exception as e:
+        logger.error(f"Error preparant el text: {str(e)}")
+        logger.error(f"Tipus d'error: {type(e).__name__}")
+        logger.error(f"Detalls de l'error: {str(e)}")
+        raise

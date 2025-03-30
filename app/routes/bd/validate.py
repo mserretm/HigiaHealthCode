@@ -65,8 +65,10 @@ async def validate_case(db: Session = Depends(get_db)):
                 db.commit()
                 
                 # Acumular mètriques
-                for metric in total_metrics:
-                    total_metrics[metric] += result['metrics'][metric]
+                if 'metrics' in result and 'classification' in result['metrics']:
+                    for metric in total_metrics:
+                        if metric in result['metrics']['classification']:
+                            total_metrics[metric] += result['metrics']['classification'][metric]
                 
                 processed += 1
                 
