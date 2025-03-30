@@ -8,4 +8,4 @@ API_V1_STR="/api/v1"
 POSTGRES_SERVER="localhost"
 POSTGRES_USER="ia_controled_access"
 POSTGRES_PASSWORD=""
-POSTGRES_DB="dwh_cubes" 
+POSTGRES_DB="dwh_cubes" gi
