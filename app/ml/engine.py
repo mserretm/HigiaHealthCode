@@ -30,6 +30,7 @@ import pickle
 # Suprimir advertencies específiques
 warnings.filterwarnings("ignore", message="NVIDIA GeForce RTX.*is not compatible with the current PyTorch installation")
 warnings.filterwarnings("ignore", category=FutureWarning, module="torch.serialization")
+warnings.filterwarnings("ignore", message="Input ids are automatically padded.*")
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Suprimir mensajes de padding de transformers
 logging.getLogger("transformers").setLevel(logging.WARNING)
+logging.getLogger("transformers.tokenization_utils").setLevel(logging.ERROR)
 
 # Constants
 DEVICE = get_device()
@@ -404,7 +406,6 @@ class ModelEngine:
             # Unir totes les parts amb separador
             combined_text = " | ".join(text_parts)
             
-            logger.info(f"Text preparat: {combined_text[:200]}...")
             return combined_text
             
         except Exception as e:
@@ -413,43 +414,21 @@ class ModelEngine:
             logger.error(f"Detalls de l'error: {str(e)}")
             raise
 
-    def validate_model(self, validation_data: dict) -> Dict[str, float]:
-        """
-        Valida el model amb un conjunt de dades.
-        """
+    def validate_model(self, validation_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Valida el model amb un cas clínic."""
         try:
-            # Preparar inputs utilitzant el processador de text
-            processed_case = text_processor.process_clinical_case(validation_data)
+            # Cargar el conjunto de códigos entrenados
+            predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
+            if os.path.exists(predicted_codes_path):
+                with open(predicted_codes_path, 'rb') as f:
+                    predicted_codes_set = pickle.load(f)
+                logger.info(f"Conjunt de codis entrenats carregat. Total: {len(predicted_codes_set)}")
+            else:
+                logger.error("No s'ha trobat el fitxer de codis entrenats (predicted_codes.pkl)")
+                raise FileNotFoundError("No s'ha trobat el fitxer de codis entrenats")
             
-            # Construir el text combinat
-            text_parts = []
-            
-            if processed_case.get('motiuingres'):
-                text_parts.append(f"Motiu d'ingrés: {processed_case['motiuingres']}")
-            
-            if processed_case.get('malaltiaactual'):
-                text_parts.append(f"Malaltia actual: {processed_case['malaltiaactual']}")
-            
-            if processed_case.get('exploracio'):
-                text_parts.append(f"Exploració: {processed_case['exploracio']}")
-            
-            if processed_case.get('provescomplementariesing'):
-                text_parts.append(f"Proves complementàries ingress: {processed_case['provescomplementariesing']}")
-            
-            if processed_case.get('provescomplementaries'):
-                text_parts.append(f"Proves complementàries: {processed_case['provescomplementaries']}")
-            
-            if processed_case.get('evolucio'):
-                text_parts.append(f"Evolució: {processed_case['evolucio']}")
-            
-            if processed_case.get('antecedents'):
-                text_parts.append(f"Antecedents: {processed_case['antecedents']}")
-            
-            if processed_case.get('cursclinic'):
-                text_parts.append(f"Curs clínic: {processed_case['cursclinic']}")
-            
-            # Unir totes les parts amb separador
-            text = " | ".join(text_parts)
+            # Preparar el text combinant tots els camps
+            text = self._prepare_text(validation_data)
             
             # Tokenitzar el text
             inputs = self.tokenizer(
@@ -528,87 +507,102 @@ class ModelEngine:
 
                 # Calcular mètriques per l'order_classifier
                 order_predictions = torch.argmax(order_logits, dim=1)
-                order_accuracy = (order_predictions == torch.arange(len(codes), device=DEVICE)).float().mean().item()
+                
+                # Eliminar repeticions en el orden predit
+                seen_indices = set()
+                unique_predicted_order = []
+                for idx in order_predictions:
+                    if idx.item() not in seen_indices and idx.item() < len(codes):
+                        seen_indices.add(idx.item())
+                        unique_predicted_order.append(idx.item())
+                
+                # Completar el orden si es necesario
+                while len(unique_predicted_order) < len(codes):
+                    for i in range(len(codes)):
+                        if i not in seen_indices:
+                            unique_predicted_order.append(i)
+                            seen_indices.add(i)
+                            break
+                
+                # Convertir a tensor
+                predicted_order = torch.tensor(unique_predicted_order, device=DEVICE)
+                
+                # Calcular accuracy con el orden único
+                order_accuracy = (predicted_order == torch.arange(len(codes), device=DEVICE)).float().mean().item()
                 
                 # Calcular la pèrdua per l'order_classifier
-                order_loss = torch.nn.CrossEntropyLoss()(order_logits, torch.arange(len(codes), device=DEVICE))
+                order_loss = torch.nn.CrossEntropyLoss()(order_logits, predicted_order)
                 
                 # Calcular la distància de Kendall-Tau entre l'ordre predit i l'ordre real
-                predicted_order = order_predictions.cpu().numpy()
+                predicted_order_np = predicted_order.cpu().numpy()
                 true_order = np.arange(len(codes))
-                kendall_tau = calculate_kendall_tau(predicted_order, true_order)
+                kendall_tau = calculate_kendall_tau(predicted_order_np, true_order)
 
                 # Log compacte amb totes les mètriques
-                logger.info(f"Cas {validation_data.get('cas', 'N/A')} - "
-                          f"Code Loss: {code_loss.item():.4f} | "
-                          f"Order Loss: {order_loss.item():.4f} | "
-                          f"Prec: {precision:.4f} | Rec: {recall:.4f} | "
-                          f"F1: {f1:.4f} | Acc: {accuracy:.4f} | "
-                          f"Order Acc: {order_accuracy:.4f} | "
-                          f"Kendall-Tau: {kendall_tau:.4f}")
+                logger.info(f"=== VALIDACIÓ CAS: {validation_data.get('cas', 'N/A')} ===")
                 
-                # Mostrar codis reals (fins a 15)
-                logger.info("=== CODIS REALS ===")
+                # Mostrar codis reals
+                logger.info(f"→ Codis reals ({len(codes)}):")
                 for i, code in enumerate(codes[:15]):
-                    logger.info(f"  {i+1}. {code}")
+                    logger.info(f"   {i+1}. {code}")
                 
-                # Obtenir codis predits amb probabilitat > 90%
+                # Obtenir i mostrar codis predits amb probabilitat > 90%
                 predicted_codes = []
                 probabilities = torch.sigmoid(code_logits)[0]
                 for i, prob in enumerate(probabilities):
                     code = mlb.classes_[i]
-                    if prob > 0.9:  # Mostrar todos los códigos con prob > 90%
+                    if code in predicted_codes_set and prob > 0.9:
                         predicted_codes.append((code, prob.item()))
                 
-                # Mostrar codis predits amb probabilitat > 90%
                 if predicted_codes:
-                    logger.info("=== CODIS PREDITS (probabilitat > 90%) ===")
+                    logger.info("→ Codis predits (>90% confiança):")
                     for i, (code, prob) in enumerate(predicted_codes[:15]):
-                        logger.info(f"  {i+1}. {code} ({prob:.1%})")
+                        logger.info(f"   {i+1}. {code} ({prob:.1%})")
                 else:
-                    logger.info("=== NO HI HA CODIS PREDITS AMB PROBABILITAT > 90% ===")
+                    logger.info("→ No hi ha codis predits amb confiança >90%")
                 
                 # Mostrar els 5 codis amb més probabilitat (solo de los entrenados)
-                logger.info("=== TOP 5 CODIS MÉS PROBABLES (ENTRENATS) ===")
-                # Obtener solo los códigos entrenados y sus probabilidades
+                logger.info("→ Top 5 codis més probables (entrenats):")
                 all_codes = []
                 probabilities = torch.sigmoid(code_logits)[0]
                 for i, prob in enumerate(probabilities):
                     code = mlb.classes_[i]
-                    if code in predicted_codes_set:  # Solo incluir códigos entrenados
+                    if code in predicted_codes_set:
                         all_codes.append((code, prob.item()))
                 
-                # Ordenar por probabilidad y mostrar los top 5
                 all_codes.sort(key=lambda x: x[1], reverse=True)
                 for i, (code, prob) in enumerate(all_codes[:5]):
-                    logger.info(f"  {i+1}. {code} ({prob:.1%})")
+                    logger.info(f"   {i+1}. {code} ({prob:.1%})")
                 
-                # Log de l'ordre predit vs real
-                logger.info("=== ORDRE DELS CODIS ===")
-                logger.info("Ordre real (diagnòstic principal → secundaris):")
-                for i, code in enumerate(codes):
-                    logger.info(f"  {i+1}. {code}")
+                # Mostrar ordre real i predit
+                logger.info("→ Ordre real:        " + " → ".join(codes))
+                logger.info("→ Ordre predit:      " + " → ".join([codes[i] for i in unique_predicted_order]))
                 
-                logger.info("Ordre predit pel model:")
-                # Asegurar que no se repitan códigos en el orden predicho
-                seen_codes = set()
-                for i, idx in enumerate(predicted_order):
-                    code = codes[idx]
-                    if code not in seen_codes:
-                        seen_codes.add(code)
-                        logger.info(f"  {len(seen_codes)}. {code}")
-                
-                # Calcular i mostrar la distància de Kendall-Tau
+                # Mostrar Kendall-Tau amb interpretació
                 if len(codes) > 1:
-                    logger.info(f"Distància de Kendall-Tau: {kendall_tau:.4f}")
+                    kendall_tau_msg = f"→ Kendall-Tau:       {kendall_tau:.2f} → "
                     if kendall_tau > 0.8:
-                        logger.info("  → L'ordre predit és molt similar al real")
+                        kendall_tau_msg += "L'ordre predit és molt similar al real"
                     elif kendall_tau > 0.5:
-                        logger.info("  → L'ordre predit és moderadament similar al real")
+                        kendall_tau_msg += "L'ordre predit és moderadament similar al real"
                     else:
-                        logger.info("  → L'ordre predit difereix significativament del real")
+                        kendall_tau_msg += "L'ordre predit difereix significativament del real"
+                    logger.info(kendall_tau_msg)
                 else:
-                    logger.info("No es pot calcular la distància de Kendall-Tau amb un sol codi")
+                    logger.info("→ No es pot calcular la distància de Kendall-Tau amb un sol codi")
+                
+                # Mostrar mètriques
+                logger.info("→ Mètriques:")
+                logger.info(f"   • Precision: {precision:.2f}")
+                logger.info(f"   • Recall:    {recall:.2f}")
+                logger.info(f"   • F1 Score:  {f1:.2f}")
+                logger.info(f"   • Accuracy:  {accuracy:.2f}")
+                
+                # Mostrar pèrdues
+                logger.info("→ Pèrdues:")
+                logger.info(f"   • Code Loss:  {code_loss.item():.4f}")
+                logger.info(f"   • Order Loss: {order_loss.item():.4f}")
+                logger.info(f"   • Order Acc:  {order_accuracy:.2f}")
                 
                 return {
                     'precision': precision,
