@@ -58,7 +58,7 @@ async def train_case(db: Session = Depends(get_db)):
                     continue
                 
                 # Processar entrenament
-                await processor.process_train(case_data)
+                await processor.process_train(case_data, db)
                 
                 # Actualitzar estat a la base de dades
                 record.us_estatentrenament = 1

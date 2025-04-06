@@ -8,26 +8,23 @@ from contextlib import asynccontextmanager
 from app.routes import router
 from app.core.config import settings
 from app.db.database import init_db
+import asyncio
 
 # Configuració del logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Gestiona el cicle de vida de l'aplicació.
+    Gestió del cicle de vida de l'aplicació.
     """
-    # Startup
-    logger.info("Iniciant l'aplicació...")
     try:
-        await init_db()
+        logger.info("Iniciant l'aplicació...")
         yield
+    except asyncio.CancelledError:
+        logger.info("Rebent senyal d'aturada...")
     finally:
-        # Shutdown
         logger.info("Tancant l'aplicació...")
 
 def create_app() -> FastAPI:

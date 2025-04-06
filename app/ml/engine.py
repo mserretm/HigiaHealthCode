@@ -27,6 +27,9 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 import torch.nn as nn
 import pickle
+from datetime import datetime
+from sqlalchemy.orm import Session
+from app.models.train import DeepLearningTrain
 
 # Suprimir advertencies específiques
 warnings.filterwarnings("ignore", message="NVIDIA GeForce RTX.*is not compatible with the current PyTorch installation")
@@ -507,11 +510,14 @@ class ModelEngine:
             logger.error(f"Error en la validació del cas {validation_data.get('cas', 'N/A')}: {str(e)}")
             raise
 
-    async def train_incremental(self, data: dict):
+    async def train_incremental(self, data: dict, db: Session):
         """
         Entrena el model amb un nou cas.
         """
         try:
+            # Registrar hora de inicio
+            hora_inici = datetime.now()
+            
             # Verificar que el model i el tokenizer estan disponibles
             if not hasattr(self, 'model') or not hasattr(self, 'tokenizer'):
                 raise RuntimeError("El model o el tokenizer no estan inicialitzats")
@@ -661,6 +667,12 @@ class ModelEngine:
             
             # Entrenar per 20 èpoques o fins que es compleixi early stopping
             max_epochs = 20
+            epochs_completed = 0
+            final_lr = 2e-5  # Learning rate inicial
+            final_total_loss = 0.0
+            final_code_loss = 0.0
+            final_order_loss = 0.0
+            
             for epoch in range(max_epochs):
                 try:
                     # Realitzar forward pass
@@ -677,6 +689,12 @@ class ModelEngine:
                     # Actualitzar pesos
                     optimizer.step()
                     scheduler.step()
+                    
+                    # Actualizar learning rate final y pérdidas finales
+                    final_lr = optimizer.param_groups[0]['lr']
+                    final_total_loss = total_loss.item()
+                    final_code_loss = code_loss.item()
+                    final_order_loss = order_loss.item()
                     
                     # Netejar gradients
                     optimizer.zero_grad()
@@ -698,11 +716,42 @@ class ModelEngine:
                         patience_counter += 1
                         if patience_counter >= patience:
                             logger.info(f"Early stopping activat després de {epoch+1} èpoques sense millora")
+                            epochs_completed = epoch + 1
                             break
+                    
+                    epochs_completed = epoch + 1
                 
                 except Exception as e:
                     logger.error(f"Error durant l'entrenament de l'època {epoch+1}: {str(e)}")
                     raise
+            
+            # Registrar hora de fin y calcular duración
+            hora_fi = datetime.now()
+            durada = (hora_fi - hora_inici).total_seconds()
+            
+            # Guardar datos de entrenamiento en la base de datos
+            train_record = DeepLearningTrain(
+                cas=data['cas'],
+                data_entrenament=hora_inici.date(),
+                hora_inici=hora_inici.strftime('%H:%M:%S'),
+                hora_fi=hora_fi.strftime('%H:%M:%S'),
+                durada=f"{durada:.2f}",
+                lr_inicial=2e-5,
+                decay=0.9,
+                batch_size=batch_size,
+                max_epochs=max_epochs,
+                early_stopping_patience=patience,
+                max_len_input=4096,
+                umbral_confianza_prediccio=0.5,
+                epochs=epochs_completed,
+                lr_final=final_lr,
+                loss_total_final=final_total_loss,
+                loss_code_final=final_code_loss,
+                loss_order_final=final_order_loss
+            )
+            
+            db.add(train_record)
+            db.commit()
             
             # Guardar el model final
             save_model(

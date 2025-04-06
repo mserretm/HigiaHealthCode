@@ -20,7 +20,7 @@ async def train_case(data: TrainRequest, db: Session = Depends(get_db)):
         case_data = data.dict()
         
         # Realitzar entrenament
-        result = await processor.process_train(case_data)
+        result = await processor.process_train(case_data, db)
         
         # Guardar registre a la base de dades
         db_case = Case(

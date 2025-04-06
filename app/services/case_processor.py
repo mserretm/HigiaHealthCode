@@ -99,16 +99,15 @@ class CaseProcessor:
                 "pending_cases": []
             }
 
-    async def process_train(self, data: dict) -> dict:
+    async def process_train(self, data: dict, db: Session) -> dict:
         try:
             # Verificar que el cas existeix en la base de dades
-            db = next(get_db())
             case = db.query(Case).filter(Case.cas == data["cas"]).first()
             if not case:
                 raise HTTPException(status_code=404, detail=f"No s'ha trobat el cas {data['cas']}")
 
             # Realitzar l'entrenament
-            await self.engine.train_incremental(data)
+            await self.engine.train_incremental(data, db)
             
             # Només si l'entrenament fou exitós, actualizar l'estat en la base de dades
             case.estat = "entrenat"
