@@ -30,6 +30,7 @@ import pickle
 from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models.train import DeepLearningTrain
+from app.models.evaluate import DeepLearningEvaluate
 
 # Suprimir advertencies específiques
 warnings.filterwarnings("ignore", message="NVIDIA GeForce RTX.*is not compatible with the current PyTorch installation")
@@ -275,9 +276,12 @@ class ModelEngine:
             logger.error(f"Error inicialitzant el model: {str(e)}")
             raise
 
-    def validate_model(self, validation_data: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_model(self, validation_data: Dict[str, Any], db: Session) -> Dict[str, Any]:
         """Valida el model amb un cas clínic."""
         try:
+            # Registrar hora de inicio
+            ts_inici = datetime.now()
+            
             # Cargar el conjunto de códigos entrenados
             predicted_codes_path = os.path.join(MODEL_DIR, 'predicted_codes.pkl')
             logger.info(f"Intentant carregar el conjunt de codis entrenats des de: {predicted_codes_path}")
@@ -451,12 +455,15 @@ class ModelEngine:
                     available_probs = probabilities[available_indices]
                     top_15_indices = torch.topk(available_probs, min(15, len(available_probs))).indices
                     top_15_codes = []
+                    top_15_probs = []
                     for idx in top_15_indices:
                         code = mlb.classes_[available_indices[idx]]
                         prob = probabilities[available_indices[idx]].item()
-                        top_15_codes.append(f"{code} ({prob:.2%})")
+                        top_15_codes.append(code)
+                        top_15_probs.append(prob)
                 else:
                     top_15_codes = []
+                    top_15_probs = []
                 
                 # Mostrar mètriques de classificació
                 logger.info("→ Mètriques de Classificació:")
@@ -474,6 +481,53 @@ class ModelEngine:
                 logger.info("→ Pèrdues:")
                 logger.info(f"   • Code Loss:  {code_loss.item():.4f}")
                 logger.info(f"   • Order Loss: {order_loss.item():.4f}")
+                
+                # Registrar hora de fin
+                ts_final = datetime.now()
+                
+                # Guardar resultados de evaluación en la base de datos
+                evaluate_record = DeepLearningEvaluate(
+                    experimento_id=f"eval_{ts_inici.strftime('%Y%m%d_%H%M%S')}",
+                    caso_id=validation_data.get('cas', 'N/A'),
+                    
+                    # Códigos y orden
+                    codis_reals=codes,
+                    codis_predits_top15=top_15_codes,
+                    probs_predits_top15=top_15_probs,
+                    codis_predits_confianza_top15=[code for code, prob in predicted_codes],
+                    ordre_real=codes,
+                    ordre_predit=[codes[i] for i in unique_predicted_order],
+                    
+                    # Métricas de clasificación
+                    accuracy=accuracy,
+                    precisi=precision,
+                    recall=recall,
+                    f1_score=f1,
+                    
+                    # Métricas de orden
+                    order_accuracy=order_accuracy,
+                    kendall_tau=kendall_tau,
+                    
+                    # Pérdidas
+                    code_loss=code_loss.item(),
+                    order_loss=order_loss.item(),
+                    
+                    # Contadores
+                    num_codis_reals=len(codes),
+                    num_codis_predits_top15=len(top_15_codes),
+                    num_codis_predits_confianza_top15=len(predicted_codes),
+                    
+                    # Metainformación
+                    ver_modelo="1.0.0",
+                    set_validacion="test",
+                    ts_inici=ts_inici,
+                    ts_final=ts_final
+                )
+                
+                logger.info(f"Guardant resultats de validació a la base de dades per al cas {validation_data.get('cas', 'N/A')}...")
+                db.add(evaluate_record)
+                db.commit()
+                logger.info(f"Resultats de validació guardats correctament a la base de dades per al cas {validation_data.get('cas', 'N/A')}.")
                 
                 # Crear el diccionari de retorn amb totes les mètriques
                 result = {

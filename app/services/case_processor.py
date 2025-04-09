@@ -100,72 +100,65 @@ class CaseProcessor:
             }
 
     async def process_train(self, data: dict, db: Session) -> dict:
+        """
+        Procesa un caso para entrenamiento.
+        """
         try:
             # Verificar que el cas existeix en la base de dades
             case = db.query(Case).filter(Case.cas == data["cas"]).first()
             if not case:
                 raise HTTPException(status_code=404, detail=f"No s'ha trobat el cas {data['cas']}")
-
+            
             # Realitzar l'entrenament
             await self.engine.train_incremental(data, db)
             
-            # Només si l'entrenament fou exitós, actualizar l'estat en la base de dades
+            # Actualizar el estado del caso
             case.estat = "entrenat"
             db.commit()
             
             return {
                 "cas": data["cas"],
-                "prediccions": [],
                 "status": "success",
                 "message": "Entrenament completat correctament"
             }
         except Exception as e:
             logger.error(f"Error en l'entrenament del cas {data['cas']}: {str(e)}")
-            # En cas d'error, assegurar-nos de que l'estat no es actualitzi
             if 'case' in locals():
                 case.estat = "error"
                 db.commit()
-            return {
-                "cas": data["cas"],
-                "prediccions": [],
-                "status": "error",
-                "message": str(e)
-            }
+            raise
 
-    async def process_validate(self, data: dict) -> dict:
+    async def process_validate(self, case_data: dict, db: Session) -> dict:
+        """
+        Procesa un caso para validación.
+        """
         try:
-            # Verificar que el cas existeix en la base de dades
-            db = next(get_db())
-            case = db.query(Case).filter(Case.cas == data["cas"]).first()
-            if not case:
-                raise HTTPException(status_code=404, detail=f"No s'ha trobat el cas {data['cas']}")
-
-            # Realitzar la validació
-            metrics = self.engine.validate_model(data)
+            logger.info(f"Iniciant validació del cas {case_data.get('cas', 'N/A')}...")
             
-            # Només si la validació fou exitosa, actualizar l'estat
+            # Verificar que el cas existeix en la base de dades
+            case = db.query(Case).filter(Case.cas == case_data["cas"]).first()
+            if not case:
+                logger.error(f"No s'ha trobat el cas {case_data['cas']} a la base de dades.")
+                raise HTTPException(status_code=404, detail=f"No s'ha trobat el cas {case_data['cas']}")
+            
+            logger.info(f"Cas {case_data['cas']} trobat a la base de dades. Iniciant validació amb el model...")
+            
+            # Validar el modelo con el caso
+            result = self.engine.validate_model(case_data, db)
+            
+            # Actualizar el estado del caso
             case.estat = "validat"
             db.commit()
+            logger.info(f"Estat del cas {case_data['cas']} actualitzat a 'validat'.")
             
-            return {
-                "cas": data["cas"],
-                "prediccions": [],
-                "status": "success",
-                "message": "Validació completada correctament",
-                "metrics": metrics
-            }
+            return result
         except Exception as e:
-            logger.error(f"Error en la validació del cas {data['cas']}: {str(e)}")
-            # En cas d'error, assegurar-nos de que l'estat no es actualitzi
+            logger.error(f"Error en la validació del cas {case_data.get('cas', 'N/A')}: {str(e)}")
             if 'case' in locals():
                 case.estat = "error"
                 db.commit()
-            return {
-                "cas": data["cas"],
-                "prediccions": [],
-                "status": "error",
-                "message": str(e)
-            }
+                logger.info(f"Estat del cas {case_data.get('cas', 'N/A')} actualitzat a 'error'.")
+            raise
 
     async def process_evaluate(self, data: dict) -> dict:
         try:

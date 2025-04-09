@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.case_processor import CaseProcessor
 from app.models.case import Case
+from app.schemas.case import CaseBase
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ async def validate_case(db: Session = Depends(get_db)):
                 }
                 
                 # Processar validació
-                result = await processor.process_validate(case_data)
+                result = await processor.process_validate(case_data, db)
                 
                 # Actualitzar estat a la base de dades
                 record.us_estatentrenament = 1
@@ -93,4 +94,15 @@ async def validate_case(db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=500,
             detail=f"Error en la validació: {str(e)}"
-        ) 
+        )
+
+@router.post("/single/")
+async def validate_single_case(case: CaseBase, db: Session = Depends(get_db)):
+    """
+    Valida un cas clínic específic amb el model entrenat.
+    """
+    try:
+        result = await processor.process_validate(case.dict(), db)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) 

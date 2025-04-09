@@ -1,17 +1,18 @@
 # app/api/main.py
 
 import logging
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.routes import router
 from app.core.config import settings
-from app.db.database import init_db
-import asyncio
 
 # Configuració del logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
@@ -19,21 +20,14 @@ async def lifespan(app: FastAPI):
     """
     Gestió del cicle de vida de l'aplicació.
     """
-    try:
-        logger.info("Iniciant l'aplicació...")
-        yield
-    except asyncio.CancelledError:
-        logger.info("Rebent senyal d'aturada...")
-    finally:
-        logger.info("Tancant l'aplicació...")
+    logger.info("Iniciant l'aplicació...")
+    yield
+    logger.info("Tancant l'aplicació...")
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.PROJECT_NAME,
-        version=settings.VERSION,
-        description=settings.DESCRIPTION,
-        docs_url="/docs",
-        redoc_url="/redoc",
+        openapi_url=f"{settings.API_V1_STR}/openapi.json",
         lifespan=lifespan
     )
 
@@ -56,7 +50,7 @@ def create_app() -> FastAPI:
         """
         Endpoint principal que retorna informació bàsica de l'API.
         """
-        return {"message": "API funcionant correctament"}
+        return {"message": "Benvingut a l'API de classificació de codis CIE-10"}
 
     # Gestor d'errors global
     @app.exception_handler(Exception)
